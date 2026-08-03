@@ -1,0 +1,76 @@
+# 编译并跑自动化测试（拉取公开仓 astral-api 的 proto）
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - name: Checkout astral-core
+        uses: actions/checkout@v4
+        with:
+          path: astral-core
+
+      - name: Checkout astral-api (proto)
+        uses: actions/checkout@v4
+        with:
+          repository: AstralNext/astral-api
+          path: astral-api
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: astral-core
+          shared-key: astral-core-${{ matrix.os }}
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev clang cmake
+
+      - name: Install protoc (Windows / macOS)
+        if: runner.os != 'Linux'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.2"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Npcap SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkZip = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
+          $sdkDir = Join-Path $env:RUNNER_TEMP "npcap-sdk"
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.15.zip" -OutFile $sdkZip
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $libDir = Join-Path $sdkDir "Lib\x64"
+          if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
+            throw "Packet.lib not found in $libDir"
+          }
+          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: cargo test
+        working-directory: astral-core
+        env:
+          ASTRAL_API_PROTO: ${{ github.workspace }}/astral-api/proto
+        run: cargo test --tests -- --nocapture

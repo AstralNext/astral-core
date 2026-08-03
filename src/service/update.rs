@@ -1,0 +1,237 @@
+//! 产品级自动更新：落入新版本目录 → 切换 current → 重启服务。
+
+use std::path::PathBuf;
+
+use anyhow::{anyhow, bail, Result};
+use tracing::info;
+
+use super::layout::{self, current_program};
+use super::manage::{resolve_program, start, stop, ServiceActionOptions};
+use super::registry::{self, InstalledInstance, ServiceRegistry};
+
+/// 自动更新选项。
+#[derive(Debug, Clone)]
+pub struct UpdateOptions {
+    /// 新二进制；缺省为当前进程。
+    pub program: Option<PathBuf>,
+    /// 版本号；缺省从二进制 `--version` 或 crate 版本推断。
+    pub version: Option<String>,
+    /// 安装根；缺省用登记中的 / 默认布局路径。
+    pub install_root: Option<PathBuf>,
+    /// 只重启这些实例；缺省为登记中的全部。
+    pub names: Option<Vec<String>>,
+    /// 保留的版本数（含当前），默认 3。
+    pub retain: usize,
+    /// 切换后不启动。
+    pub no_start: bool,
+}
+
+/// 回滚选项。
+#[derive(Debug, Clone)]
+pub struct RollbackOptions {
+    /// 目标版本；缺省为除当前外最近修改的版本。
+    pub version: Option<String>,
+    /// 只重启这些实例；缺省为登记中的全部。
+    pub names: Option<Vec<String>>,
+    /// 切换后不启动。
+    pub no_start: bool,
+}
+
+/// 执行产品级更新（不覆盖正在运行的旧版本文件）。
+pub fn update(opts: UpdateOptions) -> Result<()> {
+    let reg = registry::load()?;
+    if reg.instances.is_empty()
+        && reg.install_root.is_none()
+        && opts.install_root.is_none()
+    {
+        bail!("没有已安装服务记录，请先 service install（或传入 --install-root）");
+    }
+
+    let root = layout::resolve_install_root(
+        opts.install_root
+            .or_else(|| reg.install_root.clone()),
+    )?;
+    let source = resolve_program(opts.program)?;
+    let version = layout::resolve_version(opts.version.as_deref(), &source)?;
+    let instances = filter_instances(&reg, opts.names.as_deref())?;
+    if instances.is_empty() && !reg.instances.is_empty() {
+        bail!("没有匹配的已安装实例");
+    }
+    // 允许仅更新布局、尚无服务实例的情况；有登记实例则必须非空已在上面处理
+    let instances = if instances.is_empty() {
+        Vec::new()
+    } else {
+        instances
+    };
+
+    info!(
+        source = %source.display(),
+        root = %root.display(),
+        version = %version,
+        "开始产品级更新"
+    );
+
+    let active = layout::read_active_version(&root).ok().flatten();
+    let same_version = active.as_deref() == Some(version.as_str());
+
+    // 同版本覆盖会锁住正在运行的 exe：先停再 stage
+    if same_version {
+        for inst in &instances {
+            let _ = stop(ServiceActionOptions {
+                name: inst.name.clone(),
+                user: inst.user,
+            });
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    layout::stage_version(&root, &version, &source)?;
+
+    if !same_version {
+        for inst in &instances {
+            let _ = stop(ServiceActionOptions {
+                name: inst.name.clone(),
+                user: inst.user,
+            });
+        }
+    }
+
+    if let Err(e) = layout::switch_current(&root, &version) {
+        // 切换失败：尽量把已停的实例拉起来，避免长期停机
+        if !opts.no_start {
+            for inst in &instances {
+                let _ = start(ServiceActionOptions {
+                    name: inst.name.clone(),
+                    user: inst.user,
+                });
+            }
+        }
+        return Err(e);
+    }
+    let program = current_program(&root);
+    registry::record_active(&root, &version, &program)?;
+    layout::prune_versions(&root, &version, opts.retain)?;
+
+    if !opts.no_start {
+        for inst in &instances {
+            start(ServiceActionOptions {
+                name: inst.name.clone(),
+                user: inst.user,
+            })?;
+        }
+    }
+
+    info!(
+        version = %version,
+        program = %program.display(),
+        "自动更新完成"
+    );
+    Ok(())
+}
+
+/// 将 `current` 切回旧版本并重启服务。
+pub fn rollback(opts: RollbackOptions) -> Result<()> {
+    let reg = registry::load()?;
+    let root = layout::resolve_install_root(reg.install_root.clone())?;
+    let active = reg
+        .active_version
+        .clone()
+        .or_else(|| layout::read_active_version(&root).ok().flatten());
+
+    let target = match opts.version {
+        Some(v) => {
+            layout::validate_version(&v)?;
+            v
+        }
+        None => {
+            let mut versions = layout::list_versions(&root)?;
+            if let Some(a) = &active {
+                versions.retain(|v| v != a);
+            }
+            versions.sort_by_key(|v| {
+                layout::version_dir(&root, v)
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+            });
+            versions
+                .pop()
+                .ok_or_else(|| anyhow!("没有可回滚的旧版本"))?
+        }
+    };
+
+    if active.as_deref() == Some(target.as_str()) {
+        bail!("目标版本已是当前版本: {target}");
+    }
+
+    let instances = filter_instances(&reg, opts.names.as_deref())?;
+    info!(version = %target, "开始回滚");
+
+    for inst in &instances {
+        let _ = stop(ServiceActionOptions {
+            name: inst.name.clone(),
+            user: inst.user,
+        });
+    }
+
+    layout::switch_current(&root, &target)?;
+    let program = current_program(&root);
+    registry::record_active(&root, &target, &program)?;
+
+    if !opts.no_start {
+        for inst in &instances {
+            start(ServiceActionOptions {
+                name: inst.name.clone(),
+                user: inst.user,
+            })?;
+        }
+    }
+
+    info!(version = %target, "回滚完成");
+    Ok(())
+}
+
+/// 打印已安装版本列表。
+pub fn list_versions_report() -> Result<String> {
+    let reg = registry::load()?;
+    let root = layout::resolve_install_root(reg.install_root.clone())?;
+    let active = reg
+        .active_version
+        .clone()
+        .or_else(|| layout::read_active_version(&root).ok().flatten());
+    let versions = layout::list_versions(&root)?;
+    let mut lines = vec![format!("install_root={}", root.display())];
+    if versions.is_empty() {
+        lines.push("(no versions)".into());
+    } else {
+        for v in versions {
+            let mark = if active.as_deref() == Some(v.as_str()) {
+                "*"
+            } else {
+                " "
+            };
+            lines.push(format!("{mark} {v}"));
+        }
+    }
+    Ok(lines.join("\n"))
+}
+
+fn filter_instances<'a>(
+    reg: &'a ServiceRegistry,
+    names: Option<&[String]>,
+) -> Result<Vec<&'a InstalledInstance>> {
+    match names {
+        None => Ok(reg.instances.iter().collect()),
+        Some(list) => {
+            let mut out = Vec::new();
+            for name in list {
+                let found = reg.instances.iter().find(|i| i.name == *name);
+                match found {
+                    Some(i) => out.push(i),
+                    None => bail!("登记中不存在实例: {name}"),
+                }
+            }
+            Ok(out)
+        }
+    }
+}

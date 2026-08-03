@@ -1,0 +1,226 @@
+# 多平台编译 astral-core，上传到 GitHub Releases。
+#
+# 触发：
+#   - 推送 tag：v*（如 v0.1.0）
+#   - 手动 workflow_dispatch（可选指定 tag 名）
+#
+# 产物命名（GUI 按此匹配）：
+#   astral-core-windows-x86_64.exe
+#   astral-core-linux-x86_64
+#   astral-core-linux-aarch64
+#   astral-core-macos-aarch64
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag（空则用 run id 草稿名 release-run-<id>）"
+        required: false
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: build (${{ matrix.asset }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            asset: astral-core-windows-x86_64.exe
+            bin: astral-core.exe
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            asset: astral-core-linux-x86_64
+            bin: astral-core
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: astral-core-linux-aarch64
+            bin: astral-core
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            asset: astral-core-macos-aarch64
+            bin: astral-core
+
+    steps:
+      - name: Checkout astral-core
+        uses: actions/checkout@v4
+        with:
+          path: astral-core
+
+      - name: Checkout astral-api (proto)
+        uses: actions/checkout@v4
+        with:
+          repository: AstralNext/astral-api
+          path: astral-api
+          persist-credentials: false
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: astral-core
+          shared-key: release-${{ matrix.asset }}
+
+      - name: Install Linux build deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev clang cmake
+
+      - name: Install protoc (Windows / macOS)
+        if: runner.os != 'Linux'
+        uses: arduino/setup-protoc@v3
+        with:
+          version: "27.2"
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # EasyTier / pnet 在 Windows 链接需要 Packet.lib（Npcap SDK）
+      - name: Install Npcap SDK (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $sdkZip = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
+          $sdkDir = Join-Path $env:RUNNER_TEMP "npcap-sdk"
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.15.zip" -OutFile $sdkZip
+          Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
+          $libSubdir = if ("${{ matrix.target }}" -eq "aarch64-pc-windows-msvc") { "ARM64" } else { "x64" }
+          $libDir = Join-Path $sdkDir "Lib\$libSubdir"
+          if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
+            throw "Packet.lib not found in $libDir"
+          }
+          "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build release
+        working-directory: astral-core
+        env:
+          ASTRAL_API_PROTO: ${{ github.workspace }}/astral-api/proto
+        run: cargo build --release --bin astral-core --target ${{ matrix.target }}
+
+      - name: Stage asset (Unix)
+        if: runner.os != 'Windows'
+        working-directory: astral-core
+        run: |
+          src="target/${{ matrix.target }}/release/${{ matrix.bin }}"
+          cp "$src" "${{ matrix.asset }}"
+          chmod +x "${{ matrix.asset }}"
+
+      - name: Stage asset (Windows)
+        if: runner.os == 'Windows'
+        working-directory: astral-core
+        shell: pwsh
+        run: |
+          Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
+          # 附带官方签名 wintun.dll（TUN 必需）
+          $zip = Join-Path $env:RUNNER_TEMP "wintun.zip"
+          $out = Join-Path $env:RUNNER_TEMP "wintun"
+          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $out -Force
+          $libSub = if ("${{ matrix.target }}" -like "aarch64-*") { "arm64" } else { "amd64" }
+          $dll = Join-Path $out "wintun\$libSub\wintun.dll"
+          if (!(Test-Path $dll)) { throw "wintun.dll missing: $dll" }
+          $dllAsset = if ("${{ matrix.target }}" -like "aarch64-*") {
+            "wintun-windows-aarch64.dll"
+          } else {
+            "wintun-windows-x86_64.dll"
+          }
+          Copy-Item $dll $dllAsset
+          echo "WINTUN_ASSET=$dllAsset" >> $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: astral-core/${{ matrix.asset }}
+          if-no-files-found: error
+
+      - name: Upload wintun artifact (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.WINTUN_ASSET }}
+          path: astral-core/${{ env.WINTUN_ASSET }}
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    # 个别平台失败时仍发布已成功产物（如 Windows 临时挂了）
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Resolve tag
+        id: meta
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          elif [ -n "${{ inputs.tag }}" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=release-run-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download all assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+        continue-on-error: true
+
+      - name: Checkout install scripts
+        uses: actions/checkout@v4
+        with:
+          path: src
+          sparse-checkout: |
+            scripts/get.sh
+            scripts/get.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Stage get.sh / get.ps1 into release
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp src/scripts/get.sh dist/get.sh
+          cp src/scripts/get.ps1 dist/get.ps1
+          chmod +x dist/get.sh
+
+      - name: List assets
+        id: assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          ls -la dist || true
+          count=$(find dist -type f ! -name '.*' | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" = "0" ]; then
+            echo "::error::没有可发布的构建产物"
+            exit 1
+          fi
+
+      - name: Create / update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: astral-core ${{ steps.meta.outputs.tag }}
+          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

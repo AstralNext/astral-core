@@ -1,0 +1,10 @@
+/target/
+Cargo.lock
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local runtime data
+/data/
+/data-dev/
