@@ -124,21 +124,55 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.asset }}"
-          # 附带官方签名 wintun.dll（TUN 必需）
-          $zip = Join-Path $env:RUNNER_TEMP "wintun.zip"
-          $out = Join-Path $env:RUNNER_TEMP "wintun"
-          Invoke-WebRequest -Uri "https://www.wintun.net/builds/wintun-0.14.1.zip" -OutFile $zip
-          Expand-Archive -Path $zip -DestinationPath $out -Force
+
+      # wintun.net 偶尔给出非 zip / 目录结构和文档不一致；失败时仍发布 exe。
+      - name: Fetch wintun.dll (Windows)
+        if: runner.os == 'Windows'
+        working-directory: astral-core
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = "Stop"
           $libSub = if ("${{ matrix.target }}" -like "aarch64-*") { "arm64" } else { "amd64" }
-          $dll = Join-Path $out "wintun\$libSub\wintun.dll"
-          if (!(Test-Path $dll)) { throw "wintun.dll missing: $dll" }
           $dllAsset = if ("${{ matrix.target }}" -like "aarch64-*") {
             "wintun-windows-aarch64.dll"
           } else {
             "wintun-windows-x86_64.dll"
           }
-          Copy-Item $dll $dllAsset
-          echo "WINTUN_ASSET=$dllAsset" >> $env:GITHUB_ENV
+          $zip = Join-Path $env:RUNNER_TEMP "wintun.zip"
+          $out = Join-Path $env:RUNNER_TEMP "wintun"
+          $uris = @(
+            "https://www.wintun.net/builds/wintun-0.14.1.zip",
+            "https://download.wireguard.com/wintun/wintun-0.14.1.zip"
+          )
+          $ok = $false
+          foreach ($uri in $uris) {
+            try {
+              Write-Host "Downloading $uri"
+              Invoke-WebRequest -Uri $uri -OutFile $zip -UseBasicParsing -UserAgent "astral-core-ci"
+              $hdr = [IO.File]::ReadAllBytes($zip)
+              if ($hdr.Length -lt 2 -or $hdr[0] -ne 0x50 -or $hdr[1] -ne 0x4B) {
+                throw "not a zip ($uri size=$($hdr.Length))"
+              }
+              if (Test-Path $out) { Remove-Item -Recurse -Force $out }
+              Expand-Archive -Path $zip -DestinationPath $out -Force
+              $dll = Get-ChildItem -Path $out -Recurse -Filter "wintun.dll" |
+                Where-Object { $_.Directory.Name -eq $libSub } |
+                Select-Object -First 1
+              if (-not $dll) {
+                $dll = Get-ChildItem -Path $out -Recurse -Filter "wintun.dll" | Select-Object -First 1
+              }
+              if (-not $dll) { throw "wintun.dll not in archive from $uri" }
+              Copy-Item $dll.FullName $dllAsset
+              Add-Content -Path $env:GITHUB_ENV -Value "WINTUN_ASSET=$dllAsset" -Encoding utf8
+              Write-Host "Staged $($dll.FullName) -> $dllAsset"
+              $ok = $true
+              break
+            } catch {
+              Write-Warning $_
+            }
+          }
+          if (-not $ok) { throw "failed to fetch wintun.dll" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -148,12 +182,12 @@ jobs:
           if-no-files-found: error
 
       - name: Upload wintun artifact (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && env.WINTUN_ASSET != ''
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.WINTUN_ASSET }}
           path: astral-core/${{ env.WINTUN_ASSET }}
-          if-no-files-found: error
+          if-no-files-found: warn
 
   publish:
     name: publish release
