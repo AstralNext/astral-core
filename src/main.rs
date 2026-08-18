@@ -8,12 +8,12 @@ use service_manager::ServiceStatus;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-use astral_core::controller::{self, ControllerListenParams};
+use astral_core::config::require_local_listen;
 use astral_core::service::{
-    self, InstallOptions, RollbackOptions, RunParams, ServiceActionOptions, UpdateOptions,
+    self, InstallOptions, RunParams, SERVICE_INSTANCE_NAME, ServiceActionOptions, UpdateOptions,
 };
 
-/// Astral 节点 Core：嵌入 EasyTier，对外提供 astral.v1 gRPC。
+/// Astral 本机内核：嵌入 EasyTier，对本机 GUI 提供 JSON-RPC。
 #[derive(Debug, Parser)]
 #[command(name = "astral-core", version, about, args_conflicts_with_subcommands = true)]
 struct Cli {
@@ -26,29 +26,22 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// 前台运行 gRPC 服务
+    /// 前台运行 JSON-RPC 服务
     Run(RunCli),
-    /// 系统服务安装 / 启停（多实例）
+    /// 系统服务安装 / 启停（本机单例）
     Service {
         #[command(subcommand)]
         action: ServiceCommand,
     },
-    /// 控制端：listen 收节点出站 Agent，并可按 x-astral-node-id 隧道代理 RPC
-    Controller {
-        #[command(subcommand)]
-        action: ControllerCommand,
-    },
-    /// 本地部署 TUI 向导（键盘操作安装 / 启停 / 更新）
-    Wizard,
 }
 
 #[derive(Debug, Clone, Parser)]
 struct RunCli {
-    /// gRPC 监听地址
+    /// JSON-RPC 监听地址（仅本机；`0.0.0.0` 会改写为 `127.0.0.1`）
     #[arg(long, env = "ASTRAL_CORE_LISTEN", default_value = "127.0.0.1:50051")]
     listen: SocketAddr,
 
-    /// 数据目录（tokens / node_id）；默认使用平台应用数据目录
+    /// 数据目录；默认使用平台应用数据目录
     #[arg(long, env = "ASTRAL_CORE_DATA_DIR")]
     data_dir: Option<PathBuf>,
 
@@ -59,67 +52,17 @@ struct RunCli {
     /// Windows：由 SCM 拉起时使用（安装服务时自动写入，勿手动调用）
     #[arg(long, value_name = "SERVICE_NAME", hide = true)]
     windows_service: Option<String>,
-
-    /// 出站连接控制端（与本地 --listen 并存），如 http://1.2.3.4:8443 或 https://...
-    #[arg(long, env = "ASTRAL_CORE_CONTROLLER")]
-    controller: Option<String>,
-
-    /// 控制端共享密钥（join + attestation）；与 controller listen --token 一致
-    #[arg(long, env = "ASTRAL_CORE_CONTROLLER_TOKEN")]
-    controller_token: Option<String>,
-
-    /// 控制端 TLS CA / 自签证书 PEM（https 且非公网 CA 时需要）
-    #[arg(long, env = "ASTRAL_CORE_CONTROLLER_TLS_CA")]
-    controller_tls_ca: Option<PathBuf>,
-
-    /// 控制端 TLS 校验域名 / SNI（URL 为 IP 时可指定证书 CN）
-    #[arg(long, env = "ASTRAL_CORE_CONTROLLER_TLS_DOMAIN")]
-    controller_tls_domain: Option<String>,
-}
-
-#[derive(Debug, Subcommand)]
-enum ControllerCommand {
-    /// 监听节点主动连接
-    Listen {
-        /// 绑定地址
-        #[arg(long, default_value = "0.0.0.0:8443")]
-        bind: SocketAddr,
-
-        /// 与节点共享的密钥（节点 --controller-token）
-        #[arg(long, env = "ASTRAL_CONTROLLER_TOKEN")]
-        token: String,
-
-        /// 控制端数据目录（设备凭证库）
-        #[arg(long)]
-        data_dir: Option<PathBuf>,
-
-        /// 日志过滤
-        #[arg(long, env = "RUST_LOG", default_value = "info")]
-        log: String,
-
-        /// TLS 证书 PEM（与 --tls-key 同时提供；公网强烈建议）
-        #[arg(long, env = "ASTRAL_CONTROLLER_TLS_CERT")]
-        tls_cert: Option<PathBuf>,
-
-        /// TLS 私钥 PEM
-        #[arg(long, env = "ASTRAL_CONTROLLER_TLS_KEY")]
-        tls_key: Option<PathBuf>,
-    },
 }
 
 #[derive(Debug, Subcommand)]
 enum ServiceCommand {
-    /// 注册为系统服务（先落入并排版本布局，服务指向 current）
+    /// 注册为系统服务（落入并排版本布局，服务指向 current）
     Install {
-        /// 实例名（多实例时区分；服务标签为 dev.astral.core-<name>）
-        #[arg(long, default_value = "default")]
-        name: String,
-
-        /// gRPC 监听地址
+        /// JSON-RPC 监听地址（仅本机）
         #[arg(long, default_value = "127.0.0.1:50051")]
         listen: SocketAddr,
 
-        /// 数据目录；缺省为平台数据目录下 instances/<name>
+        /// 数据目录；缺省为平台数据目录下 instances/default
         #[arg(long)]
         data_dir: Option<PathBuf>,
 
@@ -146,52 +89,28 @@ enum ServiceCommand {
         /// 只安装不启动
         #[arg(long)]
         no_start: bool,
-
-        /// 出站控制端 URL（写入服务参数，与本地 --listen 并存）
-        #[arg(long)]
-        controller: Option<String>,
-
-        /// 控制端共享密钥（与 controller listen --token 一致）
-        #[arg(long)]
-        controller_token: Option<String>,
-
-        /// 控制端 TLS CA（写入服务参数）
-        #[arg(long)]
-        controller_tls_ca: Option<PathBuf>,
-
-        /// 控制端 TLS 域名 / SNI
-        #[arg(long)]
-        controller_tls_domain: Option<String>,
     },
     /// 卸载系统服务
     Uninstall {
-        #[arg(long, default_value = "default")]
-        name: String,
         #[arg(long)]
         user: bool,
     },
     /// 启动已安装服务
     Start {
-        #[arg(long, default_value = "default")]
-        name: String,
         #[arg(long)]
         user: bool,
     },
     /// 停止服务
     Stop {
-        #[arg(long, default_value = "default")]
-        name: String,
         #[arg(long)]
         user: bool,
     },
     /// 查询服务状态
     Status {
-        #[arg(long, default_value = "default")]
-        name: String,
         #[arg(long)]
         user: bool,
     },
-    /// 产品级更新：新版本目录 + 切换 current + 重启实例
+    /// 落入新版本并重启本机服务
     Update {
         /// 新二进制；缺省为当前进程
         #[arg(long)]
@@ -205,10 +124,6 @@ enum ServiceCommand {
         #[arg(long)]
         install_root: Option<PathBuf>,
 
-        /// 只重启指定实例（可重复）
-        #[arg(long = "name")]
-        names: Vec<String>,
-
         /// 保留版本数（含当前）
         #[arg(long, default_value_t = 3)]
         retain: usize,
@@ -217,18 +132,6 @@ enum ServiceCommand {
         #[arg(long)]
         no_start: bool,
     },
-    /// 回滚到旧版本（切换 current）
-    Rollback {
-        /// 目标版本；缺省为上一版本
-        #[arg(long)]
-        version: Option<String>,
-        #[arg(long = "name")]
-        names: Vec<String>,
-        #[arg(long)]
-        no_start: bool,
-    },
-    /// 列出已安装版本（* 为当前）
-    Versions,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -239,11 +142,6 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Service { action }) => {
             init_cli_logging();
             service_entry(action)
-        }
-        Some(Command::Controller { action }) => controller_entry(action),
-        Some(Command::Wizard) => {
-            astral_core::wizard::run_wizard()?;
-            Ok(())
         }
     }
 }
@@ -256,14 +154,11 @@ fn init_cli_logging() {
 }
 
 fn run_entry(run: RunCli) -> anyhow::Result<()> {
+    let listen = require_local_listen(run.listen)?;
     let params = RunParams {
-        listen: run.listen,
+        listen,
         data_dir: run.data_dir,
         log: run.log,
-        controller: run.controller,
-        controller_token: run.controller_token,
-        controller_tls_ca: run.controller_tls_ca,
-        controller_tls_domain: run.controller_tls_domain,
     };
 
     #[cfg(windows)]
@@ -282,50 +177,16 @@ fn run_entry(run: RunCli) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn controller_entry(action: ControllerCommand) -> anyhow::Result<()> {
-    match action {
-        ControllerCommand::Listen {
-            bind,
-            token,
-            data_dir,
-            log,
-            tls_cert,
-            tls_key,
-        } => {
-            let _ = tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::new(&log))
-                .with_target(true)
-                .try_init();
-            let data_dir = match data_dir {
-                Some(p) => p,
-                None => {
-                    let dirs = directories::ProjectDirs::from("dev", "Astral", "astral-controller")
-                        .ok_or_else(|| anyhow::anyhow!("无法解析控制端数据目录"))?;
-                    dirs.data_dir().to_path_buf()
-                }
-            };
-            let tls = astral_core::tls_util::ServerTlsPaths::from_opts(tls_cert, tls_key)?;
-            let params = ControllerListenParams {
-                bind,
-                token,
-                data_dir,
-                tls,
-            };
-            let rt = tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()?;
-            rt.block_on(async {
-                controller::run_controller(params, service::shutdown_signal()).await
-            })?;
-        }
+fn default_action(user: bool) -> ServiceActionOptions {
+    ServiceActionOptions {
+        name: SERVICE_INSTANCE_NAME.to_string(),
+        user,
     }
-    Ok(())
 }
 
 fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
     match action {
         ServiceCommand::Install {
-            name,
             listen,
             data_dir,
             program,
@@ -334,14 +195,9 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
             retain,
             user,
             no_start,
-            controller,
-            controller_token,
-            controller_tls_ca,
-            controller_tls_domain,
         } => {
             service::install(InstallOptions {
-                name,
-                listen,
+                listen: require_local_listen(listen)?,
                 data_dir,
                 program,
                 install_root,
@@ -349,24 +205,20 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
                 retain,
                 user,
                 start_after_install: !no_start,
-                controller,
-                controller_token,
-                controller_tls_ca,
-                controller_tls_domain,
             })?;
         }
-        ServiceCommand::Uninstall { name, user } => {
-            service::uninstall(ServiceActionOptions { name, user })?;
+        ServiceCommand::Uninstall { user } => {
+            service::uninstall(default_action(user))?;
         }
-        ServiceCommand::Start { name, user } => {
-            service::start(ServiceActionOptions { name, user })?;
+        ServiceCommand::Start { user } => {
+            service::start(default_action(user))?;
         }
-        ServiceCommand::Stop { name, user } => {
-            service::stop(ServiceActionOptions { name, user })?;
+        ServiceCommand::Stop { user } => {
+            service::stop(default_action(user))?;
         }
-        ServiceCommand::Status { name, user } => {
-            let meta = service::status_label(&name)?;
-            let st = service::status(ServiceActionOptions { name, user })?;
+        ServiceCommand::Status { user } => {
+            let meta = service::status_label(SERVICE_INSTANCE_NAME)?;
+            let st = service::status(default_action(user))?;
             let text = match &st {
                 ServiceStatus::NotInstalled => "not-installed",
                 ServiceStatus::Running => "running",
@@ -384,7 +236,6 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
             program,
             version,
             install_root,
-            names,
             retain,
             no_start,
         } => {
@@ -392,24 +243,9 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
                 program,
                 version,
                 install_root,
-                names: if names.is_empty() { None } else { Some(names) },
                 retain,
                 no_start,
             })?;
-        }
-        ServiceCommand::Rollback {
-            version,
-            names,
-            no_start,
-        } => {
-            service::rollback(RollbackOptions {
-                version,
-                names: if names.is_empty() { None } else { Some(names) },
-                no_start,
-            })?;
-        }
-        ServiceCommand::Versions => {
-            println!("{}", service::list_versions_report()?);
         }
     }
     Ok(())

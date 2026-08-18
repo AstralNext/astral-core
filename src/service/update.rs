@@ -7,7 +7,7 @@ use tracing::info;
 
 use super::layout::{self, current_program};
 use super::manage::{resolve_program, start, stop, ServiceActionOptions};
-use super::registry::{self, InstalledInstance, ServiceRegistry};
+use super::registry;
 
 /// 自动更新选项。
 #[derive(Debug, Clone)]
@@ -18,8 +18,6 @@ pub struct UpdateOptions {
     pub version: Option<String>,
     /// 安装根；缺省用登记中的 / 默认布局路径。
     pub install_root: Option<PathBuf>,
-    /// 只重启这些实例；缺省为登记中的全部。
-    pub names: Option<Vec<String>>,
     /// 保留的版本数（含当前），默认 3。
     pub retain: usize,
     /// 切换后不启动。
@@ -31,8 +29,6 @@ pub struct UpdateOptions {
 pub struct RollbackOptions {
     /// 目标版本；缺省为除当前外最近修改的版本。
     pub version: Option<String>,
-    /// 只重启这些实例；缺省为登记中的全部。
-    pub names: Option<Vec<String>>,
     /// 切换后不启动。
     pub no_start: bool,
 }
@@ -53,16 +49,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
     )?;
     let source = resolve_program(opts.program)?;
     let version = layout::resolve_version(opts.version.as_deref(), &source)?;
-    let instances = filter_instances(&reg, opts.names.as_deref())?;
-    if instances.is_empty() && !reg.instances.is_empty() {
-        bail!("没有匹配的已安装实例");
-    }
-    // 允许仅更新布局、尚无服务实例的情况；有登记实例则必须非空已在上面处理
-    let instances = if instances.is_empty() {
-        Vec::new()
-    } else {
-        instances
-    };
+    let instances = &reg.instances;
 
     info!(
         source = %source.display(),
@@ -76,7 +63,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
 
     // 同版本覆盖会锁住正在运行的 exe：先停再 stage
     if same_version {
-        for inst in &instances {
+        for inst in instances {
             let _ = stop(ServiceActionOptions {
                 name: inst.name.clone(),
                 user: inst.user,
@@ -88,7 +75,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
     layout::stage_version(&root, &version, &source)?;
 
     if !same_version {
-        for inst in &instances {
+        for inst in instances {
             let _ = stop(ServiceActionOptions {
                 name: inst.name.clone(),
                 user: inst.user,
@@ -99,7 +86,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
     if let Err(e) = layout::switch_current(&root, &version) {
         // 切换失败：尽量把已停的实例拉起来，避免长期停机
         if !opts.no_start {
-            for inst in &instances {
+            for inst in instances {
                 let _ = start(ServiceActionOptions {
                     name: inst.name.clone(),
                     user: inst.user,
@@ -113,7 +100,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
     layout::prune_versions(&root, &version, opts.retain)?;
 
     if !opts.no_start {
-        for inst in &instances {
+        for inst in instances {
             start(ServiceActionOptions {
                 name: inst.name.clone(),
                 user: inst.user,
@@ -164,10 +151,10 @@ pub fn rollback(opts: RollbackOptions) -> Result<()> {
         bail!("目标版本已是当前版本: {target}");
     }
 
-    let instances = filter_instances(&reg, opts.names.as_deref())?;
+    let instances = &reg.instances;
     info!(version = %target, "开始回滚");
 
-    for inst in &instances {
+            for inst in instances {
         let _ = stop(ServiceActionOptions {
             name: inst.name.clone(),
             user: inst.user,
@@ -179,7 +166,7 @@ pub fn rollback(opts: RollbackOptions) -> Result<()> {
     registry::record_active(&root, &target, &program)?;
 
     if !opts.no_start {
-        for inst in &instances {
+        for inst in instances {
             start(ServiceActionOptions {
                 name: inst.name.clone(),
                 user: inst.user,
@@ -214,24 +201,4 @@ pub fn list_versions_report() -> Result<String> {
         }
     }
     Ok(lines.join("\n"))
-}
-
-fn filter_instances<'a>(
-    reg: &'a ServiceRegistry,
-    names: Option<&[String]>,
-) -> Result<Vec<&'a InstalledInstance>> {
-    match names {
-        None => Ok(reg.instances.iter().collect()),
-        Some(list) => {
-            let mut out = Vec::new();
-            for name in list {
-                let found = reg.instances.iter().find(|i| i.name == *name);
-                match found {
-                    Some(i) => out.push(i),
-                    None => bail!("登记中不存在实例: {name}"),
-                }
-            }
-            Ok(out)
-        }
-    }
 }

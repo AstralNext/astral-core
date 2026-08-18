@@ -3,15 +3,57 @@
 use easytier::launcher::NetworkInstanceRunningInfo;
 use easytier::proto::api::instance::{list_peer_route_pair, PeerRoutePair};
 
-use crate::pb::PeerSummary;
+use crate::model::PeerSummary;
 
-/// 将引擎运行快照转为 Peer 摘要列表（不含本机合成节点时可过滤）。
+/// 将引擎运行快照转为 Peer 摘要列表；始终包含本机合成节点。
 pub fn peer_summaries_from_info(info: &NetworkInstanceRunningInfo) -> Vec<PeerSummary> {
     let pairs = peer_route_pairs_from_info(info);
-    pairs
+    let mut peers: Vec<PeerSummary> = pairs
         .into_iter()
         .filter_map(|p| pair_to_summary(&p))
-        .collect()
+        .collect();
+    merge_local_peer(
+        &mut peers,
+        &hostname_from_info(info),
+        &my_ipv4_from_info(info),
+    );
+    peers
+}
+
+/// 是否已有本机节点。
+pub fn has_local_peer(peers: &[PeerSummary]) -> bool {
+    peers.iter().any(|p| {
+        p.conn_type.eq_ignore_ascii_case("local") || p.peer_id == "0"
+    })
+}
+
+/// 在列表头部补上本机（无对端时也应能看见自己）。
+pub fn merge_local_peer(peers: &mut Vec<PeerSummary>, hostname: &str, ipv4: &str) {
+    if has_local_peer(peers) {
+        return;
+    }
+    if !ipv4.is_empty() && peers.iter().any(|p| p.ipv4 == ipv4) {
+        return;
+    }
+    let hostname = if hostname.trim().is_empty() {
+        "local".to_string()
+    } else {
+        hostname.to_string()
+    };
+    peers.insert(
+        0,
+        PeerSummary {
+            peer_id: "0".into(),
+            hostname,
+            ipv4: ipv4.to_string(),
+            ipv6: String::new(),
+            latency_ms: 0.0,
+            loss_percent: 0.0,
+            conn_type: "local".into(),
+            rx_bytes: 0,
+            tx_bytes: 0,
+        },
+    );
 }
 
 /// 组装 peer/route 对（与旧 FRB 适配层逻辑对齐）。
@@ -111,4 +153,48 @@ pub fn hostname_from_info(info: &NetworkInstanceRunningInfo) -> String {
         .as_ref()
         .map(|n| n.hostname.clone())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn summary(id: &str, host: &str, ipv4: &str, conn: &str) -> PeerSummary {
+        PeerSummary {
+            peer_id: id.into(),
+            hostname: host.into(),
+            ipv4: ipv4.into(),
+            ipv6: String::new(),
+            latency_ms: 1.0,
+            loss_percent: 0.0,
+            conn_type: conn.into(),
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+    }
+
+    #[test]
+    fn merge_local_on_empty_list() {
+        let mut peers = Vec::new();
+        merge_local_peer(&mut peers, "alpha", "10.126.126.1");
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer_id, "0");
+        assert_eq!(peers[0].conn_type, "local");
+        assert_eq!(peers[0].hostname, "alpha");
+        assert_eq!(peers[0].ipv4, "10.126.126.1");
+    }
+
+    #[test]
+    fn merge_local_skips_when_already_local() {
+        let mut peers = vec![summary("0", "alpha", "10.126.126.1", "local")];
+        merge_local_peer(&mut peers, "alpha", "10.126.126.1");
+        assert_eq!(peers.len(), 1);
+    }
+
+    #[test]
+    fn merge_local_skips_same_ipv4() {
+        let mut peers = vec![summary("9", "alpha", "10.126.126.1", "p2p")];
+        merge_local_peer(&mut peers, "alpha", "10.126.126.1");
+        assert_eq!(peers.len(), 1);
+    }
 }

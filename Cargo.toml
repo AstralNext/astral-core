@@ -2,7 +2,7 @@
 name = "astral-core"
 version = "0.1.0"
 edition = "2021"
-description = "Astral 节点 Core：嵌入 EasyTier，对外提供 astral.v1 gRPC"
+description = "Astral 本机内核：嵌入 EasyTier，对本机 GUI 提供 JSON-RPC"
 license = "MIT"
 publish = false
 
@@ -15,12 +15,8 @@ name = "smoke_engine"
 path = "tests/smoke_engine.rs"
 
 [[test]]
-name = "grpc_integration"
-path = "tests/grpc_integration/main.rs"
-
-[[test]]
-name = "agent_session"
-path = "tests/agent_session.rs"
+name = "rpc_integration"
+path = "tests/rpc_integration/main.rs"
 
 [[test]]
 name = "service_lifecycle"
@@ -41,26 +37,14 @@ easytier = { git = "https://github.com/ldoubil/EasyTier.git", features = [
 ] }
 
 anyhow = "1"
-bytes = "1"
+axum = { version = "0.8", default-features = false, features = ["json", "tokio", "http1"] }
 clap = { version = "4", features = ["derive", "env"] }
-crossterm = "0.28"
 directories = "5"
-futures-util = "0.3"
-hex = "0.4"
-http = "1"
-http-body-util = "0.1"
-prost = "0.13"
-rand = "0.8"
-ratatui = "0.29"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 service-manager = { git = "https://github.com/EasyTier/service-manager-rs.git", branch = "main" }
-sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "fs", "io-util", "time"] }
-tokio-stream = { version = "0.1", features = ["sync"] }
-tonic = { version = "0.12", features = ["transport", "tls", "tls-native-roots"] }
-tower = "0.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -68,11 +52,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"
 
-[build-dependencies]
-tonic-build = "0.12"
-
 [dev-dependencies]
-rcgen = "0.13"
 tempfile = "3"
 
 [profile.release]

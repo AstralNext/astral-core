@@ -119,6 +119,7 @@ pub fn stage_version(root: &Path, version: &str, source: &Path) -> Result<PathBu
         .with_context(|| format!("创建版本目录失败: {}", dir.display()))?;
     let dest = version_program(root, version);
     if same_path(&source, &dest) {
+        copy_sidecars(&source, &dir)?;
         return Ok(dest);
     }
     fs::copy(&source, &dest).with_context(|| {
@@ -135,12 +136,46 @@ pub fn stage_version(root: &Path, version: &str, source: &Path) -> Result<PathBu
         perms.set_mode(0o755);
         fs::set_permissions(&dest, perms)?;
     }
+    copy_sidecars(&source, &dir)?;
     info!(
         version,
         dest = %dest.display(),
         "版本已落入安装布局"
     );
     Ok(dest)
+}
+
+/// Windows 上把 `wintun.dll` / `Packet.dll` 拷到版本目录（与 exe 同级）。
+pub fn copy_sidecars(source_program: &Path, dest_dir: &Path) -> Result<()> {
+    #[cfg(not(windows))]
+    {
+        let _ = (source_program, dest_dir);
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        const NAMES: &[&str] = &["wintun.dll", "Packet.dll"];
+        let Some(src_dir) = source_program.parent() else {
+            return Ok(());
+        };
+        fs::create_dir_all(dest_dir)
+            .with_context(|| format!("创建 sidecar 目录失败: {}", dest_dir.display()))?;
+        for name in NAMES {
+            let from = src_dir.join(name);
+            if !from.is_file() {
+                continue;
+            }
+            let to = dest_dir.join(name);
+            if same_path(&from, &to) {
+                continue;
+            }
+            fs::copy(&from, &to).with_context(|| {
+                format!("复制 sidecar 失败: {} -> {}", from.display(), to.display())
+            })?;
+            info!(sidecar = name, dest = %to.display(), "已复制运行时 DLL");
+        }
+        Ok(())
+    }
 }
 
 /// 将 `current` 指向指定版本目录（Windows: junction；Unix: symlink）。

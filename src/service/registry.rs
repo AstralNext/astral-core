@@ -125,10 +125,16 @@ pub fn record_install(
     reg.install_root = Some(install_root);
     reg.active_version = Some(active_version.to_string());
     reg.program = Some(program);
-    if let Some(existing) = reg.instances.iter_mut().find(|i| i.name == name && i.user == user)
-    {
+    if let Some(existing) = reg.instances.first_mut() {
+        if existing.name != name {
+            return Err(anyhow!(
+                "已安装服务 {}，本机仅支持单例 `{name}`",
+                existing.name
+            ));
+        }
         existing.listen = listen;
         existing.data_dir = data_dir;
+        existing.user = user;
     } else {
         reg.instances.push(InstalledInstance {
             name: name.to_string(),

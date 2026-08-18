@@ -1,20 +1,18 @@
 //! 对 EasyTier [`NetworkInstanceManager`] 的封装。
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
 use easytier::instance_manager::NetworkInstanceManager;
 use easytier::launcher::NetworkInstanceRunningInfo;
-use easytier::rpc_service::InstanceRpcService;
 use uuid::Uuid;
 
-use crate::engine::events::EventHub;
-use crate::engine::peers::{hostname_from_info, my_ipv4_from_info, peer_summaries_from_info};
-use crate::engine::rpc::{instance_rpc, wait_instance_rpc};
+use crate::engine::peers::{
+    has_local_peer, hostname_from_info, merge_local_peer, my_ipv4_from_info, peer_summaries_from_info,
+};
 use crate::engine::structured::{loader_to_toml, structured_to_loader};
 use crate::error::{CoreError, CoreResult};
-use crate::pb::{InstanceState, InstanceSummary, NetworkConfig, PeerSummary};
+use crate::model::{InstanceState, InstanceSummary, NetworkConfig, PeerSummary};
 use crate::store::{CachedInstance, InstanceCache};
 
 /// 引擎句柄：进程内唯一实例管理器 + 配置缓存钩子。
@@ -22,23 +20,15 @@ use crate::store::{CachedInstance, InstanceCache};
 pub struct EngineHandle {
     manager: Arc<NetworkInstanceManager>,
     cache: Arc<InstanceCache>,
-    events: Option<EventHub>,
 }
 
 impl EngineHandle {
-    /// 创建（尚无 EventHub；bootstrap 后再 [`Self::with_events`]）。
+    /// 创建。
     pub fn new(cache: Arc<InstanceCache>) -> Self {
         Self {
             manager: Arc::new(NetworkInstanceManager::new()),
             cache,
-            events: None,
         }
-    }
-
-    /// 绑定事件中枢。
-    pub fn with_events(mut self, hub: EventHub) -> Self {
-        self.events = Some(hub);
-        self
     }
 
     /// 底层管理器。
@@ -49,21 +39,6 @@ impl EngineHandle {
     /// 配置缓存。
     pub fn cache(&self) -> &Arc<InstanceCache> {
         &self.cache
-    }
-
-    /// 事件中枢。
-    pub fn events(&self) -> Option<&EventHub> {
-        self.events.as_ref()
-    }
-
-    /// 实例 RPC。
-    pub fn instance_rpc(&self, id: Uuid) -> CoreResult<Arc<dyn InstanceRpcService>> {
-        instance_rpc(&self.manager, id)
-    }
-
-    /// 等待实例 RPC。
-    pub async fn wait_rpc(&self, id: Uuid) -> CoreResult<Arc<dyn InstanceRpcService>> {
-        wait_instance_rpc(&self.manager, id, Duration::from_secs(8)).await
     }
 
     /// 注入 TUN fd（移动端 / 自定义 TUN）。
@@ -85,7 +60,7 @@ impl EngineHandle {
         Ok(structured_to_loader(cfg)?.get_id())
     }
 
-    /// 用 TOML 启动；写入缓存；挂 EventBus。
+    /// 用 TOML 启动并写入缓存。
     pub fn start_toml(
         &self,
         toml: &str,
@@ -126,9 +101,8 @@ impl EngineHandle {
             })?;
             return Ok(id);
         }
-        // watch_event=false：由我们自行订阅 EventBus，避免重复内部 handler 占满
         self.manager
-            .run_network_instance(cfg, false, ConfigFileControl::STATIC_CONFIG)
+            .run_network_instance(cfg, true, ConfigFileControl::STATIC_CONFIG)
             .map_err(|e| CoreError::Internal(format!("启动实例失败: {e}")))?;
 
         self.cache.upsert(CachedInstance {
@@ -137,14 +111,6 @@ impl EngineHandle {
             display_name: display_name.to_string(),
             source_path: source_path.to_string(),
         })?;
-
-        if let Some(hub) = &self.events {
-            if let Some(inst) = self.manager.iter().find(|item| *item.key() == id) {
-                if let Some(sub) = inst.subscribe_event() {
-                    hub.attach_easytier_bus(id, sub);
-                }
-            }
-        }
         Ok(id)
     }
 
@@ -190,20 +156,34 @@ impl EngineHandle {
         self.manager.get_network_info(&id).await
     }
 
-    /// 完整 running_info JSON。
-    pub async fn running_info_json(&self, id: Uuid) -> String {
-        match self.running_info(id).await {
-            Some(info) => serde_json::to_string(&info).unwrap_or_else(|_| "{}".into()),
-            None => "null".into(),
-        }
-    }
-
-    /// Peer 列表。
+    /// Peer 列表（实例在表中时至少含本机）。
     pub async fn list_peers(&self, id: Uuid) -> Vec<PeerSummary> {
-        match self.running_info(id).await {
+        let mut peers = match self.running_info(id).await {
             Some(info) => peer_summaries_from_info(&info),
             None => Vec::new(),
+        };
+        if !has_local_peer(&peers) {
+            let (ipv4, _, hostname) = self.local_addrs(id).await;
+            let cached = self.cache.get_uuid(id).ok().flatten();
+            let hostname = if hostname.is_empty() {
+                cached
+                    .as_ref()
+                    .map(|c| c.display_name.clone())
+                    .unwrap_or_default()
+            } else {
+                hostname
+            };
+            let ipv4 = if ipv4.is_empty() {
+                cached
+                    .as_ref()
+                    .map(|c| ipv4_from_toml(&c.toml))
+                    .unwrap_or_default()
+            } else {
+                ipv4
+            };
+            merge_local_peer(&mut peers, &hostname, &ipv4);
         }
+        peers
     }
 
     /// 本机地址。
@@ -258,7 +238,7 @@ impl EngineHandle {
             return InstanceSummary {
                 instance_id: id_str,
                 display_name,
-                state: state as i32,
+                state,
                 running,
                 error_message: err,
                 dev_name: optional_string(info.dev_name.clone()),
@@ -276,7 +256,7 @@ impl EngineHandle {
             return InstanceSummary {
                 instance_id: id_str,
                 display_name,
-                state: InstanceState::Starting as i32,
+                state: InstanceState::Starting,
                 running: false,
                 error_message: err,
                 dev_name: String::new(),
@@ -287,7 +267,7 @@ impl EngineHandle {
         InstanceSummary {
             instance_id: id_str,
             display_name,
-            state: InstanceState::Stopped as i32,
+            state: InstanceState::Stopped,
             running: false,
             error_message: "instance not found".into(),
             dev_name: String::new(),
@@ -324,4 +304,27 @@ impl IntoOptionalString for Option<String> {
     fn into_optional_string(self) -> String {
         self.unwrap_or_default()
     }
+}
+
+fn ipv4_from_toml(toml: &str) -> String {
+    for line in toml.lines() {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed.strip_prefix("ipv4") else {
+            continue;
+        };
+        let Some(start) = rest.find('"') else {
+            continue;
+        };
+        let inner = &rest[start + 1..];
+        let Some(end) = inner.find('"') else {
+            continue;
+        };
+        return inner[..end]
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .to_string();
+    }
+    String::new()
 }

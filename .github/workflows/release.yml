@@ -56,13 +56,6 @@ jobs:
         with:
           path: astral-core
 
-      - name: Checkout astral-api (proto)
-        uses: actions/checkout@v4
-        with:
-          repository: AstralNext/astral-api
-          path: astral-api
-          persist-credentials: false
-
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -78,14 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y protobuf-compiler pkg-config libssl-dev clang cmake
-
-      - name: Install protoc (Windows / macOS)
-        if: runner.os != 'Linux'
-        uses: arduino/setup-protoc@v3
-        with:
-          version: "27.2"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sudo apt-get install -y pkg-config libssl-dev clang cmake
 
       # EasyTier / pnet 在 Windows 链接需要 Packet.lib（Npcap SDK）
       - name: Install Npcap SDK (Windows)
@@ -106,8 +92,6 @@ jobs:
 
       - name: Build release
         working-directory: astral-core
-        env:
-          ASTRAL_API_PROTO: ${{ github.workspace }}/astral-api/proto
         run: cargo build --release --bin astral-core --target ${{ matrix.target }}
 
       - name: Stage asset (Unix)

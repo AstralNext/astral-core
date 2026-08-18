@@ -1,7 +1,7 @@
 //! 冒烟：校验 TOML、结构化配置、缓存重启路径（不要求真 TUN）。
 
 use astral_core::engine::EngineHandle;
-use astral_core::pb::NetworkConfig;
+use astral_core::model::NetworkConfig;
 use astral_core::store::InstanceCache;
 use std::sync::Arc;
 

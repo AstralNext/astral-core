@@ -1,7 +1,6 @@
-//! 核心错误类型与到 `tonic::Status` 的映射。
+//! 核心错误类型。
 
 use thiserror::Error;
-use tonic::Status;
 
 /// 库内通用 Result。
 pub type CoreResult<T> = Result<T, CoreError>;
@@ -17,13 +16,13 @@ pub enum CoreError {
     #[error("未找到: {0}")]
     NotFound(String),
 
-    /// 前置条件失败（如配置非法、禁止吊销最后一把 token）。
+    /// 前置条件失败（如配置非法）。
     #[error("前置条件失败: {0}")]
     FailedPrecondition(String),
 
-    /// 未实现的能力。
-    #[error("尚未实现: {0}")]
-    Unimplemented(String),
+    /// JSON-RPC 方法不存在。
+    #[error("未知方法: {0}")]
+    MethodNotFound(String),
 
     /// 内部错误。
     #[error("内部错误: {0}")]
@@ -43,23 +42,16 @@ pub enum CoreError {
 }
 
 impl CoreError {
-    /// 转为 gRPC Status（供 Service 实现使用）。
-    pub fn into_status(self) -> Status {
+    /// JSON-RPC 2.0 错误码。
+    pub fn rpc_code(&self) -> i64 {
         match self {
-            CoreError::InvalidArgument(m) => Status::invalid_argument(m),
-            CoreError::NotFound(m) => Status::not_found(m),
-            CoreError::FailedPrecondition(m) => Status::failed_precondition(m),
-            CoreError::Unimplemented(m) => Status::unimplemented(m),
-            CoreError::Internal(m) => Status::internal(m),
-            CoreError::Io(e) => Status::internal(e.to_string()),
-            CoreError::Json(e) => Status::internal(e.to_string()),
-            CoreError::Other(e) => Status::internal(e.to_string()),
+            CoreError::InvalidArgument(_) => -32602,
+            CoreError::NotFound(_) => -32004,
+            CoreError::FailedPrecondition(_) => -32002,
+            CoreError::MethodNotFound(_) => -32601,
+            CoreError::Internal(_) | CoreError::Io(_) | CoreError::Json(_) | CoreError::Other(_) => {
+                -32603
+            }
         }
-    }
-}
-
-impl From<CoreError> for Status {
-    fn from(value: CoreError) -> Self {
-        value.into_status()
     }
 }

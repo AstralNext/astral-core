@@ -7,7 +7,8 @@ use std::sync::Mutex;
 use astral_core::service::{
     self, binary_name, current_program, list_versions, list_versions_report, load_service_registry,
     read_active_version, record_install, record_uninstall, service_label, stage_version,
-    switch_current, update, validate_version, version_program, RollbackOptions, UpdateOptions,
+    switch_current, update, validate_version, version_dir, version_program, RollbackOptions,
+    UpdateOptions,
 };
 use tempfile::TempDir;
 
@@ -64,9 +65,8 @@ fn validate_version_and_instance_label() {
     assert!(validate_version("").is_err());
 
     assert!(service_label("default").is_ok());
-    assert!(service_label("edge-1").is_ok());
+    assert!(service_label("edge-1").is_err());
     assert!(service_label("-bad").is_err());
-    assert!(service_label("has space").is_err());
     let label = service_label("default").unwrap();
     assert_eq!(label.to_qualified_name(), "dev.astral.core-default");
     assert_eq!(label.to_script_name(), "astral-core-default");
@@ -102,6 +102,31 @@ fn layout_stage_switch_list_and_stable_current_path() {
     assert!(vers.contains(&"0.1.1".into()));
 }
 
+#[cfg(windows)]
+#[test]
+fn stage_version_copies_wintun_sidecar() {
+    let root = TempDir::new().unwrap();
+    let src_dir = root.path().join("download");
+    fs::create_dir_all(&src_dir).unwrap();
+    let src = src_dir.join(binary_name());
+    write_fake_bin(&src, "core");
+    fs::write(src_dir.join("wintun.dll"), b"signed-wintun").unwrap();
+    fs::write(src_dir.join("Packet.dll"), b"packet").unwrap();
+
+    let install = root.path().join("app");
+    fs::create_dir_all(&install).unwrap();
+    stage_version(&install, "0.1.0", &src).unwrap();
+
+    assert_eq!(
+        fs::read(version_dir(&install, "0.1.0").join("wintun.dll")).unwrap(),
+        b"signed-wintun"
+    );
+    assert_eq!(
+        fs::read(version_dir(&install, "0.1.0").join("Packet.dll")).unwrap(),
+        b"packet"
+    );
+}
+
 #[test]
 fn update_and_rollback_with_retain() {
     let _reg = RegistryGuard::new();
@@ -124,7 +149,6 @@ fn update_and_rollback_with_retain() {
         program: Some(s1.clone()),
         version: Some("1.0.0".into()),
         install_root: Some(install.clone()),
-        names: None,
         retain: 3,
         no_start: true,
     })
@@ -139,7 +163,6 @@ fn update_and_rollback_with_retain() {
         program: Some(s2),
         version: Some("1.0.1".into()),
         install_root: Some(install.clone()),
-        names: None,
         retain: 3,
         no_start: true,
     })
@@ -148,7 +171,6 @@ fn update_and_rollback_with_retain() {
         program: Some(s3),
         version: Some("1.0.2".into()),
         install_root: Some(install.clone()),
-        names: None,
         retain: 3,
         no_start: true,
     })
@@ -158,7 +180,6 @@ fn update_and_rollback_with_retain() {
         program: Some(s4),
         version: Some("1.0.3".into()),
         install_root: Some(install.clone()),
-        names: None,
         retain: 3,
         no_start: true,
     })
@@ -173,7 +194,6 @@ fn update_and_rollback_with_retain() {
     // 回滚到上一版（按 mtime，应为 1.0.2）
     service::rollback(RollbackOptions {
         version: None,
-        names: None,
         no_start: true,
     })
     .unwrap();
@@ -185,7 +205,6 @@ fn update_and_rollback_with_retain() {
     if version_program(&install, "1.0.1").exists() {
         service::rollback(RollbackOptions {
             version: Some("1.0.1".into()),
-            names: None,
             no_start: true,
         })
         .unwrap();
@@ -219,27 +238,11 @@ fn registry_record_install_and_uninstall() {
         false,
     )
     .unwrap();
-    record_install(
-        &install,
-        "0.1.0",
-        &prog,
-        "edge",
-        "127.0.0.1:50052".parse().unwrap(),
-        &data,
-        false,
-    )
-    .unwrap();
 
-    let reg = load_service_registry().unwrap();
-    assert_eq!(reg.instances.len(), 2);
-    assert_eq!(reg.active_version.as_deref(), Some("0.1.0"));
-
-    record_uninstall("edge", false).unwrap();
     let reg = load_service_registry().unwrap();
     assert_eq!(reg.instances.len(), 1);
     assert_eq!(reg.instances[0].name, "default");
-    // 还有实例时保留布局字段
-    assert!(reg.install_root.is_some());
+    assert_eq!(reg.active_version.as_deref(), Some("0.1.0"));
 
     record_uninstall("default", false).unwrap();
     let reg = load_service_registry().unwrap();
@@ -291,7 +294,7 @@ fn registry_rejects_conflicting_install_root() {
 }
 
 #[test]
-fn update_rejects_unknown_instance_name_filter() {
+fn registry_rejects_second_service_name() {
     let _reg = RegistryGuard::new();
     let tmp = TempDir::new().unwrap();
     let install = tmp.path().join("app");
@@ -312,17 +315,18 @@ fn update_rejects_unknown_instance_name_filter() {
     )
     .unwrap();
 
-    let err = update(UpdateOptions {
-        program: Some(src),
-        version: Some("0.1.1".into()),
-        install_root: Some(install),
-        names: Some(vec!["not-exist".into()]),
-        retain: 3,
-        no_start: true,
-    })
+    let err = record_install(
+        &install,
+        "0.1.0",
+        &src,
+        "other",
+        "127.0.0.1:50052".parse().unwrap(),
+        &data,
+        false,
+    )
     .unwrap_err();
     assert!(
-        err.to_string().contains("不存在"),
+        err.to_string().contains("单例"),
         "unexpected err: {err}"
     );
 }
@@ -354,33 +358,27 @@ fn os_service_install_uninstall() {
         return;
     }
 
-    let name = format!("test{}", std::process::id() % 100000);
     service::install(service::InstallOptions {
-        name: name.clone(),
         listen: "127.0.0.1:50111".parse().unwrap(),
         data_dir: Some(data),
         program: Some(program),
         install_root: Some(install),
         version: Some("0.0.0-test".into()),
         retain: 2,
-        user: cfg!(not(windows)), // Linux/macOS 尽量用户级
+        user: cfg!(not(windows)),
         start_after_install: false,
-        controller: None,
-        controller_token: None,
-        controller_tls_ca: None,
-        controller_tls_domain: None,
     })
     .expect("install");
 
     let st = service::status(service::ServiceActionOptions {
-        name: name.clone(),
+        name: "default".into(),
         user: cfg!(not(windows)),
     })
     .expect("status");
     eprintln!("status after install: {st:?}");
 
     service::uninstall(service::ServiceActionOptions {
-        name,
+        name: "default".into(),
         user: cfg!(not(windows)),
     })
     .expect("uninstall");

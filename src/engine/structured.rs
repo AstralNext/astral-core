@@ -1,4 +1,4 @@
-//! 将 astral.v1 [`NetworkConfig`] 转为 EasyTier `TomlConfigLoader`。
+//! 将 [`NetworkConfig`] 转为 EasyTier `TomlConfigLoader`。
 
 use easytier::common::config::{
     ConfigLoader, NetworkIdentity, PeerConfig, PortForwardConfig, TomlConfigLoader, VpnPortalConfig,
@@ -6,7 +6,7 @@ use easytier::common::config::{
 use easytier::launcher::NetworkConfig as EtNetworkConfig;
 
 use crate::error::{CoreError, CoreResult};
-use crate::pb::NetworkConfig;
+use crate::model::NetworkConfig;
 
 /// 结构化配置 → EasyTier loader（优先走 ET `gen_config`，失败则手工映射）。
 pub fn structured_to_loader(cfg: &NetworkConfig) -> CoreResult<TomlConfigLoader> {

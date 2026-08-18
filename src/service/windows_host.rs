@@ -14,8 +14,8 @@ use windows_service::service::{
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
 use windows_service::service_dispatcher;
 
-use super::run::{bootstrap_runtime, spawn_agent_if_configured, RunParams};
-use crate::grpc;
+use super::run::{bootstrap_runtime, RunParams};
+use crate::rpc;
 
 static SERVICE_NAME: OnceLock<String> = OnceLock::new();
 static RUN_PARAMS: OnceLock<RunParams> = OnceLock::new();
@@ -87,7 +87,6 @@ fn run_service() -> Result<()> {
 
     let bootstrapped = rt.block_on(async {
         let state = bootstrap_runtime(&params)?;
-        spawn_agent_if_configured(&state, &params).map_err(|e| anyhow!(e))?;
         Ok::<_, anyhow::Error>(state)
     });
 
@@ -128,7 +127,7 @@ fn run_service() -> Result<()> {
             let _ = async_stop_tx.send(());
         });
 
-        grpc::serve_with_shutdown(state, async move {
+        rpc::serve_with_shutdown(state, async move {
             let _ = async_stop_rx.await;
             info!("收到 Windows 服务停止请求");
         })

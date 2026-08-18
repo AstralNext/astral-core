@@ -4,4 +4,4 @@ mod paths;
 mod settings;
 
 pub use paths::DataPaths;
-pub use settings::{RuntimeConfig, RuntimeConfigBuilder};
+pub use settings::{require_local_listen, RuntimeConfig, RuntimeConfigBuilder};

@@ -1,34 +1,19 @@
 #!/usr/bin/env sh
 # astral-core 一键安装（Linux / macOS）
 #
-# 最短:
 #   curl -fsSL https://raw.githubusercontent.com/AstralNext/astral-core/main/scripts/get.sh | sh
 #
-# 或 Release 附件:
-#   curl -fsSL https://github.com/AstralNext/astral-core/releases/latest/download/get.sh | sh
-#
-# 常用环境变量 / 参数:
-#   ASTRAL_VERSION=v0.1.0   指定版本（默认 latest）
-#   ASTRAL_SERVICE=0        只下载不装服务（默认装）
+# 环境变量:
+#   ASTRAL_VERSION=v0.1.0
+#   ASTRAL_SERVICE=0        只下载不装服务
 #   ASTRAL_LISTEN=127.0.0.1:50051
-#   ASTRAL_NAME=default
-#   ASTRAL_CONTROLLER=https://...
-#   ASTRAL_CONTROLLER_TOKEN=...
 #   ASTRAL_REPO=AstralNext/astral-core
-#
-#   curl -fsSL .../get.sh | sh -s -- --no-service
-#   curl -fsSL .../get.sh | sh -s -- --listen 0.0.0.0:50051 --controller http://x:8443 --token secret
 
 set -eu
 
 REPO="${ASTRAL_REPO:-AstralNext/astral-core}"
 VERSION="${ASTRAL_VERSION:-latest}"
-NAME="${ASTRAL_NAME:-default}"
 LISTEN="${ASTRAL_LISTEN:-127.0.0.1:50051}"
-CONTROLLER="${ASTRAL_CONTROLLER:-}"
-CONTROLLER_TOKEN="${ASTRAL_CONTROLLER_TOKEN:-}"
-CONTROLLER_TLS_CA="${ASTRAL_CONTROLLER_TLS_CA:-}"
-CONTROLLER_TLS_DOMAIN="${ASTRAL_CONTROLLER_TLS_DOMAIN:-}"
 SERVICE="${ASTRAL_SERVICE:-1}"
 PREFIX="${ASTRAL_PREFIX:-}"
 
@@ -42,15 +27,10 @@ while [ $# -gt 0 ]; do
     --no-service) SERVICE=0; shift ;;
     --service) SERVICE=1; shift ;;
     --version) VERSION="$2"; shift 2 ;;
-    --name) NAME="$2"; shift 2 ;;
     --listen) LISTEN="$2"; shift 2 ;;
-    --controller) CONTROLLER="$2"; shift 2 ;;
-    --token|--controller-token) CONTROLLER_TOKEN="$2"; shift 2 ;;
-    --tls-ca) CONTROLLER_TLS_CA="$2"; shift 2 ;;
-    --tls-domain) CONTROLLER_TLS_DOMAIN="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     -h|--help)
-      sed -n '2,20p' "$0" 2>/dev/null || true
+      sed -n '2,12p' "$0" 2>/dev/null || true
       exit 0
       ;;
     *) die "未知参数: $1" ;;
@@ -128,27 +108,12 @@ if [ "$SERVICE" != "1" ]; then
   exit 0
 fi
 
-ARGS="service install --name ${NAME} --listen ${LISTEN} --program ${BIN_DIR}/astral-core"
-if [ -n "$CONTROLLER" ]; then
-  [ -n "$CONTROLLER_TOKEN" ] || die "启用控制端时需要 --token / ASTRAL_CONTROLLER_TOKEN"
-  ARGS="$ARGS --controller ${CONTROLLER} --controller-token ${CONTROLLER_TOKEN}"
-  [ -n "$CONTROLLER_TLS_CA" ] && ARGS="$ARGS --controller-tls-ca ${CONTROLLER_TLS_CA}"
-  [ -n "$CONTROLLER_TLS_DOMAIN" ] && ARGS="$ARGS --controller-tls-domain ${CONTROLLER_TLS_DOMAIN}"
-fi
+ARGS="service install --listen ${LISTEN} --program ${BIN_DIR}/astral-core --user"
 
-info "正在安装系统服务（可能需要 sudo）"
+info "正在安装用户级系统服务"
 # shellcheck disable=SC2086
-if [ "$(id -u)" -eq 0 ]; then
-  ${BIN_DIR}/astral-core $ARGS
-elif command -v sudo >/dev/null 2>&1; then
-  sudo ${BIN_DIR}/astral-core $ARGS
-else
-  warn "非 root 且无 sudo：二进制已安装，已跳过服务"
-  warn "请用 root 执行: astral-core $ARGS"
-  exit 0
-fi
+${BIN_DIR}/astral-core $ARGS
 
-ok "服务已安装: dev.astral.core-${NAME}"
-echo "监听: ${LISTEN}"
-echo "令牌: 数据目录 bootstrap_token.txt（首次启动后生成）"
-echo "状态: astral-core service status --name ${NAME}"
+ok "服务已安装: dev.astral.core-default"
+echo "监听: ${LISTEN}（仅本机）"
+echo "状态: astral-core service status --user"
