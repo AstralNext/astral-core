@@ -33,10 +33,7 @@ impl AppState {
     }
 
     /// 与 [`Self::bootstrap`] 相同，并按 `log_filter` 安装 tracing。
-    pub fn bootstrap_with_log_filter(
-        runtime: RuntimeConfig,
-        log_filter: &str,
-    ) -> CoreResult<Self> {
+    pub fn bootstrap_with_log_filter(runtime: RuntimeConfig, log_filter: &str) -> CoreResult<Self> {
         let logs = LogHub::install(log_filter);
         let paths = match &runtime.data_dir {
             Some(dir) => DataPaths::from_root(dir.clone()),
@@ -44,7 +41,7 @@ impl AppState {
         }?;
         let node_id = load_or_create_node_id(&paths.node_id_file())?;
 
-        let cache = Arc::new(InstanceCache::new());
+        let cache = Arc::new(InstanceCache::load_or_create(paths.instance_cache_file())?);
         let engine = EngineHandle::new(cache);
 
         Ok(Self {

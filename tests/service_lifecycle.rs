@@ -83,16 +83,28 @@ fn layout_stage_switch_list_and_stable_current_path() {
 
     stage_version(&install, "0.1.0", &src1).unwrap();
     switch_current(&install, "0.1.0").unwrap();
-    assert_eq!(read_active_version(&install).unwrap().as_deref(), Some("0.1.0"));
+    assert_eq!(
+        read_active_version(&install).unwrap().as_deref(),
+        Some("0.1.0")
+    );
     assert_eq!(read_marker(&current_program(&install)), "fake-bin:v1");
-    assert_eq!(read_marker(&version_program(&install, "0.1.0")), "fake-bin:v1");
+    assert_eq!(
+        read_marker(&version_program(&install, "0.1.0")),
+        "fake-bin:v1"
+    );
 
     stage_version(&install, "0.1.1", &src2).unwrap();
     switch_current(&install, "0.1.1").unwrap();
-    assert_eq!(read_active_version(&install).unwrap().as_deref(), Some("0.1.1"));
+    assert_eq!(
+        read_active_version(&install).unwrap().as_deref(),
+        Some("0.1.1")
+    );
     // 稳定入口仍是 current/，内容已切到 v2；旧版文件仍在
     assert_eq!(read_marker(&current_program(&install)), "fake-bin:v2");
-    assert_eq!(read_marker(&version_program(&install, "0.1.0")), "fake-bin:v1");
+    assert_eq!(
+        read_marker(&version_program(&install, "0.1.0")),
+        "fake-bin:v1"
+    );
 
     let vers = list_versions(&install).unwrap();
     assert!(vers.contains(&"0.1.0".into()));
@@ -183,9 +195,15 @@ fn update_and_rollback_with_retain() {
     .unwrap();
 
     let vers = list_versions(&install).unwrap();
-    assert!(!vers.contains(&"1.0.0".into()), "最旧版应被 prune: {vers:?}");
+    assert!(
+        !vers.contains(&"1.0.0".into()),
+        "最旧版应被 prune: {vers:?}"
+    );
     assert!(vers.contains(&"1.0.3".into()));
-    assert_eq!(read_active_version(&install).unwrap().as_deref(), Some("1.0.3"));
+    assert_eq!(
+        read_active_version(&install).unwrap().as_deref(),
+        Some("1.0.3")
+    );
     assert_eq!(read_marker(&current_program(&install)), "fake-bin:d");
 
     // 回滚到上一版（按 mtime，应为 1.0.2）
@@ -196,7 +214,10 @@ fn update_and_rollback_with_retain() {
     .unwrap();
     let active = read_active_version(&install).unwrap().unwrap();
     assert_ne!(active, "1.0.3");
-    assert!(["1.0.1", "1.0.2"].contains(&active.as_str()), "unexpected {active}");
+    assert!(
+        ["1.0.1", "1.0.2"].contains(&active.as_str()),
+        "unexpected {active}"
+    );
 
     // 显式回滚到仍存在的版本
     if version_program(&install, "1.0.1").exists() {
@@ -205,7 +226,10 @@ fn update_and_rollback_with_retain() {
             no_start: true,
         })
         .unwrap();
-        assert_eq!(read_active_version(&install).unwrap().as_deref(), Some("1.0.1"));
+        assert_eq!(
+            read_active_version(&install).unwrap().as_deref(),
+            Some("1.0.1")
+        );
         assert_eq!(read_marker(&current_program(&install)), "fake-bin:b");
     }
 

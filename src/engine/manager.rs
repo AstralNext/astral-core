@@ -8,13 +8,27 @@ use easytier::instance_manager::NetworkInstanceManager;
 use easytier::launcher::NetworkInstanceRunningInfo;
 use uuid::Uuid;
 
+use tracing::{info, warn};
+
 use crate::engine::peers::{
-    has_local_peer, hostname_from_info, merge_local_peer, my_ipv4_from_info, peer_summaries_from_info,
+    has_local_peer, hostname_from_info, merge_local_peer, my_ipv4_from_info,
+    peer_summaries_from_info,
 };
 use crate::engine::structured::{loader_to_toml, structured_to_loader};
 use crate::error::{CoreError, CoreResult};
 use crate::model::{InstanceState, InstanceSummary, NetworkConfig, PeerSummary};
 use crate::store::{CachedInstance, InstanceCache};
+
+/// 按落盘「上次在跑」记录恢复的结果。
+#[derive(Debug, Clone, Default)]
+pub struct RestoreReport {
+    /// 本次新拉起的实例数。
+    pub started: usize,
+    /// 已在运行而跳过的实例数。
+    pub skipped_already_running: usize,
+    /// 拉起失败的实例（id, 错误）。
+    pub failed: Vec<(String, String)>,
+}
 
 /// 引擎句柄：进程内唯一实例管理器 + 配置缓存钩子。
 #[derive(Clone)]
@@ -77,6 +91,55 @@ impl EngineHandle {
     /// 校验结构化配置。
     pub fn validate_structured(&self, cfg: &NetworkConfig) -> CoreResult<Uuid> {
         Ok(structured_to_loader(cfg)?.get_id())
+    }
+
+    /// 按缓存中「上次在跑」的记录拉起实例（开机自启）。
+    ///
+    /// 单个失败不阻断其它实例；调用方可按 [`RestoreReport::failed`] 重试。
+    pub fn restore_desired(&self) -> RestoreReport {
+        let desired = match self.cache.desired_running() {
+            Ok(list) => list,
+            Err(e) => {
+                warn!(error = %e, "读取待恢复实例失败");
+                return RestoreReport {
+                    failed: vec![("-".into(), e.to_string())],
+                    ..RestoreReport::default()
+                };
+            }
+        };
+
+        let mut report = RestoreReport::default();
+        for rec in desired {
+            if rec.toml.trim().is_empty() {
+                continue;
+            }
+            if let Ok(id) = Uuid::parse_str(&rec.instance_id) {
+                if self.exists(id) {
+                    report.skipped_already_running += 1;
+                    continue;
+                }
+            }
+            match self.start_toml(&rec.toml, &rec.display_name, &rec.source_path) {
+                Ok(_) => report.started += 1,
+                Err(e) => {
+                    warn!(
+                        instance_id = %rec.instance_id,
+                        error = %e,
+                        "自动恢复组网实例失败"
+                    );
+                    report.failed.push((rec.instance_id, e.to_string()));
+                }
+            }
+        }
+        if report.started > 0 {
+            info!(
+                started = report.started,
+                skipped = report.skipped_already_running,
+                failed = report.failed.len(),
+                "已按上次状态恢复组网实例"
+            );
+        }
+        report
     }
 
     /// 用 TOML 启动并写入缓存。

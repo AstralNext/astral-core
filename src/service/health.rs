@@ -123,10 +123,7 @@ pub fn inspect_health(user: bool) -> Result<ServiceHealthReport> {
         issues.push(format!("旧服务仍存在: {LEGACY_SERVICE_QUALIFIED_NAME}"));
     }
     if legacy_data_dir.exists() {
-        issues.push(format!(
-            "旧数据目录仍存在: {}",
-            legacy_data_dir.display()
-        ));
+        issues.push(format!("旧数据目录仍存在: {}", legacy_data_dir.display()));
     }
     if let Some(listener) = &listener {
         if listener.is_astral_core && (!listener.generation_match || listener.is_legacy) {
@@ -148,10 +145,7 @@ pub fn inspect_health(user: bool) -> Result<ServiceHealthReport> {
         }
         if let Some(dir) = &registry_data_dir {
             if dir != &data_dir {
-                issues.push(format!(
-                    "登记 data_dir 与当前默认不一致: {}",
-                    dir.display()
-                ));
+                issues.push(format!("登记 data_dir 与当前默认不一致: {}", dir.display()));
             }
         }
     }

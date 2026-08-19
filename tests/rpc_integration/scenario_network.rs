@@ -11,13 +11,7 @@ async fn s06_network_status() {
     };
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    match rpc_call(
-        &server.addr,
-        "network.status",
-        json!({ "instance_id": id }),
-    )
-    .await
-    {
+    match rpc_call(&server.addr, "network.status", json!({ "instance_id": id })).await {
         Ok(body) => {
             assert_eq!(
                 body.get("instance_id").and_then(|v| v.as_str()),
@@ -27,12 +21,7 @@ async fn s06_network_status() {
         Err((_, e)) => eprintln!("network.status 暂不可用: {e}"),
     }
 
-    let _ = rpc_call(
-        &server.addr,
-        "instance.stop",
-        json!({ "instance_id": id }),
-    )
-    .await;
+    let _ = rpc_call(&server.addr, "instance.stop", json!({ "instance_id": id })).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -1,5 +1,6 @@
 //! 测试脚手架：临时 Core 进程内 JSON-RPC。
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use astral_core::app::AppState;
@@ -13,7 +14,9 @@ use tokio::sync::oneshot;
 
 /// 单测用服务器：独立 data-dir + 随机端口。
 pub struct TestServer {
-    _data: TempDir,
+    _data: Option<TempDir>,
+    #[allow(dead_code)]
+    pub data_dir: PathBuf,
     pub addr: String,
     shutdown: Option<oneshot::Sender<()>>,
     join: Option<tokio::task::JoinHandle<()>>,
@@ -22,11 +25,21 @@ pub struct TestServer {
 impl TestServer {
     pub async fn start() -> Self {
         let data = TempDir::new().expect("tempdir");
+        let dir = data.path().to_path_buf();
+        Self::start_in(dir, Some(data)).await
+    }
+
+    /// 使用已有数据目录（用于模拟内核重启后的自动重连）。
+    pub async fn start_with_data_dir(dir: PathBuf) -> Self {
+        Self::start_in(dir, None).await
+    }
+
+    async fn start_in(dir: PathBuf, keep: Option<TempDir>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let sock = listener.local_addr().expect("local_addr");
         let runtime = RuntimeConfigBuilder::new()
             .listen(sock)
-            .data_dir(data.path().to_path_buf())
+            .data_dir(dir.clone())
             .build()
             .expect("runtime");
         let state = AppState::bootstrap(runtime).expect("bootstrap");
@@ -48,11 +61,23 @@ impl TestServer {
         }
 
         Self {
-            _data: data,
+            _data: keep,
+            data_dir: dir,
             addr: endpoint,
             shutdown: Some(tx),
             join: Some(join),
         }
+    }
+
+    pub async fn shutdown(mut self) {
+        if let Some(tx) = self.shutdown.take() {
+            let _ = tx.send(());
+        }
+        if let Some(join) = self.join.take() {
+            let _ = tokio::time::timeout(Duration::from_secs(8), join).await;
+        }
+        // EasyTier 后台任务在 drop 后仍可能短暂占用 instance_id / UDP。
+        tokio::time::sleep(Duration::from_millis(400)).await;
     }
 }
 

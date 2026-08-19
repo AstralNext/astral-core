@@ -58,6 +58,7 @@ windows-service = "0.7"
 
 [dev-dependencies]
 tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
 
 [profile.release]
 lto = true

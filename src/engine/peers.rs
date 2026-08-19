@@ -22,9 +22,9 @@ pub fn peer_summaries_from_info(info: &NetworkInstanceRunningInfo) -> Vec<PeerSu
 
 /// 是否已有本机节点。
 pub fn has_local_peer(peers: &[PeerSummary]) -> bool {
-    peers.iter().any(|p| {
-        p.conn_type.eq_ignore_ascii_case("local") || p.peer_id == "0"
-    })
+    peers
+        .iter()
+        .any(|p| p.conn_type.eq_ignore_ascii_case("local") || p.peer_id == "0")
 }
 
 /// 在列表头部补上本机（无对端时也应能看见自己）。

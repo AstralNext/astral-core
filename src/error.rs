@@ -49,9 +49,10 @@ impl CoreError {
             CoreError::NotFound(_) => -32004,
             CoreError::FailedPrecondition(_) => -32002,
             CoreError::MethodNotFound(_) => -32601,
-            CoreError::Internal(_) | CoreError::Io(_) | CoreError::Json(_) | CoreError::Other(_) => {
-                -32603
-            }
+            CoreError::Internal(_)
+            | CoreError::Io(_)
+            | CoreError::Json(_)
+            | CoreError::Other(_) => -32603,
         }
     }
 }

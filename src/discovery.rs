@@ -44,5 +44,6 @@ pub async fn serve_discovery(rpc_addr: SocketAddr) {
 /// 返回内核的 RPC 地址字符串（如 `127.0.0.1:50051`），超时返回 None。
 pub fn parse_discovery_response(data: &[u8]) -> Option<String> {
     let s = std::str::from_utf8(data).ok()?;
-    s.strip_prefix(RESPONSE_PREFIX).map(|a| a.trim().to_string())
+    s.strip_prefix(RESPONSE_PREFIX)
+        .map(|a| a.trim().to_string())
 }

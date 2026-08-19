@@ -17,6 +17,7 @@ use crate::error::{CoreError, CoreResult};
 pub async fn serve(state: AppState) -> CoreResult<()> {
     let addr = state.runtime.listen;
     info!(%addr, "启动 astral-core JSON-RPC");
+    spawn_restore(&state);
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| CoreError::Internal(format!("监听失败: {e}")))?;
@@ -33,6 +34,7 @@ where
 {
     let addr = state.runtime.listen;
     info!(%addr, "启动 astral-core JSON-RPC（可关闭）");
+    spawn_restore(&state);
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|e| CoreError::Internal(format!("监听失败: {e}")))?;
@@ -56,11 +58,19 @@ where
         .local_addr()
         .map_err(|e| CoreError::Internal(e.to_string()))?;
     info!(%addr, "启动 astral-core JSON-RPC（可关闭）");
+    spawn_restore(&state);
     axum::serve(listener, router(state))
         .with_graceful_shutdown(shutdown)
         .await
         .map_err(|e| CoreError::Internal(format!("JSON-RPC 服务失败: {e}")))?;
     Ok(())
+}
+
+fn spawn_restore(state: &AppState) {
+    let engine = state.engine.clone();
+    tokio::spawn(async move {
+        crate::engine::restore_desired_with_retry(engine).await;
+    });
 }
 
 fn router(state: AppState) -> Router {
@@ -84,7 +94,11 @@ async fn rpc_entry(State(state): State<AppState>, body: String) -> Json<Value> {
     let req: RpcRequest = match serde_json::from_str(&body) {
         Ok(v) => v,
         Err(e) => {
-            return Json(rpc_error(Value::Null, -32700, format!("JSON 解析失败: {e}")));
+            return Json(rpc_error(
+                Value::Null,
+                -32700,
+                format!("JSON 解析失败: {e}"),
+            ));
         }
     };
     let id = if req.id.is_null() {

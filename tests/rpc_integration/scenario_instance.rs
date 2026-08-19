@@ -10,16 +10,11 @@ async fn s04_lifecycle_start_get_list_meta_stop() {
         return;
     };
 
-    let got = rpc_call(
-        &server.addr,
-        "instance.get",
-        json!({ "instance_id": id }),
-    )
-    .await
-    .expect("get");
+    let got = rpc_call(&server.addr, "instance.get", json!({ "instance_id": id }))
+        .await
+        .expect("get");
     assert_eq!(
-        got.pointer("/summary/instance_id")
-            .and_then(|v| v.as_str()),
+        got.pointer("/summary/instance_id").and_then(|v| v.as_str()),
         Some(id.as_str())
     );
 
@@ -35,19 +30,11 @@ async fn s04_lifecycle_start_get_list_meta_stop() {
         .iter()
         .any(|m| m.get("instance_id").and_then(|v| v.as_str()) == Some(id.as_str())));
 
-    let _ = rpc_call(
-        &server.addr,
-        "instance.stop",
-        json!({ "instance_id": id }),
-    )
-    .await
-    .expect("stop");
+    let _ = rpc_call(&server.addr, "instance.stop", json!({ "instance_id": id }))
+        .await
+        .expect("stop");
 
-    let _ = rpc_call(
-        &server.addr,
-        "instance.stop",
-        json!({ "instance_id": id }),
-    )
-    .await
-    .expect("stop idempotent");
+    let _ = rpc_call(&server.addr, "instance.stop", json!({ "instance_id": id }))
+        .await
+        .expect("stop idempotent");
 }

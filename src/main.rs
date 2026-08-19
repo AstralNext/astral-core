@@ -16,7 +16,12 @@ use astral_core::service::{
 
 /// Astral 本机内核：嵌入 EasyTier，对本机 GUI 提供 JSON-RPC。
 #[derive(Debug, Parser)]
-#[command(name = "astral-core", version, about, args_conflicts_with_subcommands = true)]
+#[command(
+    name = "astral-core",
+    version,
+    about,
+    args_conflicts_with_subcommands = true
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

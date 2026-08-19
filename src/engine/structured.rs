@@ -172,12 +172,19 @@ fn manual_loader(c: &NetworkConfig) -> CoreResult<TomlConfigLoader> {
         let ip = if c.ipv4.contains('/') {
             c.ipv4.clone()
         } else {
-            format!("{}/{}", c.ipv4, if c.network_length > 0 { c.network_length } else { 24 })
+            format!(
+                "{}/{}",
+                c.ipv4,
+                if c.network_length > 0 {
+                    c.network_length
+                } else {
+                    24
+                }
+            )
         };
-        cfg.set_ipv4(Some(
-            ip.parse()
-                .map_err(|e| CoreError::InvalidArgument(format!("ipv4 无效: {e}")))?,
-        ));
+        cfg.set_ipv4(Some(ip.parse().map_err(|e| {
+            CoreError::InvalidArgument(format!("ipv4 无效: {e}"))
+        })?));
     }
     let mut flags = cfg.get_flags();
     if !c.dev_name.is_empty() {

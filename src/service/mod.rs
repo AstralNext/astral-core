@@ -40,9 +40,7 @@ pub use manage::{
     install, service_label, start, status, status_label, stop, uninstall, InstallOptions,
     ServiceActionOptions, UninstallOptions,
 };
-pub use recovery::{
-    begin_phase, clear_state, load_state, MigrationPhase, MigrationState,
-};
+pub use recovery::{begin_phase, clear_state, load_state, MigrationPhase, MigrationState};
 pub use registry::{
     load as load_service_registry, record_install, record_uninstall, save_raw, InstalledInstance,
 };

@@ -4,4 +4,5 @@ mod harness;
 mod scenario_instance;
 mod scenario_logger;
 mod scenario_network;
+mod scenario_restore;
 mod scenario_system;

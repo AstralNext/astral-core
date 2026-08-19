@@ -270,10 +270,8 @@ mod tests {
     #[test]
     fn peel_instance_prefix_parses_easytier_event() {
         let id = "22222222-2222-4222-8222-222222222222";
-        let (parsed, rest) = peel_instance_prefix(&format!(
-            "[{id}] new peer connection added"
-        ))
-        .expect("prefix");
+        let (parsed, rest) =
+            peel_instance_prefix(&format!("[{id}] new peer connection added")).expect("prefix");
         assert_eq!(parsed, id);
         assert_eq!(rest, "new peer connection added");
     }

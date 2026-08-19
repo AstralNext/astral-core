@@ -195,14 +195,7 @@ pub fn install(opts: InstallOptions) -> Result<()> {
         })
         .with_context(|| format!("安装服务失败: {}", label.to_qualified_name()))?;
 
-    super::registry::record_install(
-        &root,
-        &version,
-        &program,
-        opts.listen,
-        &data_dir,
-        opts.user,
-    )?;
+    super::registry::record_install(&root, &version, &program, opts.listen, &data_dir, opts.user)?;
 
     if opts.start_after_install {
         manager
@@ -238,8 +231,7 @@ fn uninstall_service_only(opts: ServiceActionOptions) -> Result<()> {
             label: label.clone(),
         })
         .with_context(|| format!("卸载服务失败: {}", label.to_qualified_name()))?;
-    super::registry::record_uninstall(opts.user)
-        .with_context(|| "更新服务登记失败")?;
+    super::registry::record_uninstall(opts.user).with_context(|| "更新服务登记失败")?;
     info!(service = %label.to_qualified_name(), "服务已卸载");
     Ok(())
 }

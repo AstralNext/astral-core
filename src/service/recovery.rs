@@ -55,8 +55,7 @@ pub fn save_state(state: &MigrationState) -> Result<()> {
     let path = state_path(&root);
     let tmp = path.with_extension("json.tmp");
     fs::write(&tmp, serde_json::to_string_pretty(state)?)?;
-    fs::rename(&tmp, &path)
-        .with_context(|| format!("写入迁移状态失败: {}", path.display()))
+    fs::rename(&tmp, &path).with_context(|| format!("写入迁移状态失败: {}", path.display()))
 }
 
 pub fn clear_state() -> Result<()> {
@@ -68,7 +67,11 @@ pub fn clear_state() -> Result<()> {
     Ok(())
 }
 
-pub fn begin_phase(phase: MigrationPhase, target_version: Option<String>, message: Option<String>) -> Result<()> {
+pub fn begin_phase(
+    phase: MigrationPhase,
+    target_version: Option<String>,
+    message: Option<String>,
+) -> Result<()> {
     let now = chrono_lite_now();
     let existing = load_state().ok().flatten();
     let started_at = existing

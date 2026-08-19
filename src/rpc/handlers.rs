@@ -45,11 +45,7 @@ fn default_log_limit() -> u32 {
 }
 
 pub(super) async fn dispatch(state: &AppState, method: &str, params: Value) -> CoreResult<Value> {
-    let params = if params.is_null() {
-        json!({})
-    } else {
-        params
-    };
+    let params = if params.is_null() { json!({}) } else { params };
     match method {
         "ping" => Ok(json!({ "ok": true })),
         "info" => Ok(json!({
@@ -114,7 +110,10 @@ async fn instance_get(state: &AppState, params: Value) -> CoreResult<Value> {
     let p: InstanceIdParams = parse(params)?;
     let id = parse_id(&p.instance_id)?;
     if !state.engine.exists(id) && state.engine.cache().get_uuid(id)?.is_none() {
-        return Err(CoreError::NotFound(format!("实例不存在: {}", p.instance_id)));
+        return Err(CoreError::NotFound(format!(
+            "实例不存在: {}",
+            p.instance_id
+        )));
     }
     let summary = state.engine.summary_of(id).await;
     let cached = state.engine.cache().get_uuid(id)?;
@@ -149,7 +148,10 @@ async fn network_status(state: &AppState, params: Value) -> CoreResult<Value> {
     let p: InstanceIdParams = parse(params)?;
     let id = parse_id(&p.instance_id)?;
     if !state.engine.exists(id) {
-        return Err(CoreError::NotFound(format!("实例不存在: {}", p.instance_id)));
+        return Err(CoreError::NotFound(format!(
+            "实例不存在: {}",
+            p.instance_id
+        )));
     }
     let summary = state.engine.summary_of(id).await;
     let peers = state.engine.list_peers(id).await;
@@ -175,7 +177,9 @@ fn logs_recent(state: &AppState, params: Value) -> CoreResult<Value> {
     let lines = if p.instance_id.trim().is_empty() {
         state.logs.recent_since(p.after, limit)
     } else {
-        state.logs.recent_since_for_instance(p.after, limit, p.instance_id.trim())
+        state
+            .logs
+            .recent_since_for_instance(p.after, limit, p.instance_id.trim())
     };
     let last_seq = lines.last().map(|l| l.seq).unwrap_or(p.after);
     Ok(json!({ "lines": lines, "last_seq": last_seq }))

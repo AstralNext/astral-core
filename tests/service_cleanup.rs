@@ -4,9 +4,9 @@ use std::fs;
 use std::sync::Mutex;
 
 use astral_core::service::{
-    begin_phase, clear_state, health_report_json, inspect_health, load_state,
-    load_service_registry, migrate_legacy_data_if_needed, normalize_registry_generation,
-    record_install, remove_legacy_data_dir_if_safe, save_raw, MigrationPhase, SERVICE_GENERATION,
+    begin_phase, clear_state, health_report_json, inspect_health, load_service_registry,
+    load_state, migrate_legacy_data_if_needed, normalize_registry_generation, record_install,
+    remove_legacy_data_dir_if_safe, save_raw, MigrationPhase, SERVICE_GENERATION,
 };
 use tempfile::TempDir;
 

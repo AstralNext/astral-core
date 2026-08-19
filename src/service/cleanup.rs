@@ -18,9 +18,7 @@ use tracing::{info, warn};
 use super::health::{default_data_root, ListenerInfo, ServiceHealthReport};
 use super::manage::native_manager;
 use super::recovery::{begin_phase, clear_state, resume_if_incomplete, MigrationPhase};
-use super::{
-    LEGACY_SERVICE_QUALIFIED_NAME, SERVICE_GENERATION, SERVICE_QUALIFIED_NAME,
-};
+use super::{LEGACY_SERVICE_QUALIFIED_NAME, SERVICE_GENERATION, SERVICE_QUALIFIED_NAME};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:50051";
 
@@ -136,7 +134,9 @@ fn find_listener_unix(port: u16) -> Result<Option<ListenerInfo>> {
     if pid == 0 {
         return Ok(None);
     }
-    let ps = Command::new("ps").args(["-o", "command=", "-p", &pid.to_string()]).output();
+    let ps = Command::new("ps")
+        .args(["-o", "command=", "-p", &pid.to_string()])
+        .output();
     let cmd = ps
         .ok()
         .filter(|o| o.status.success())
@@ -182,8 +182,8 @@ fn kill_stale_astral_listeners(port: u16) -> Result<u32> {
 }
 
 fn stop_service_by_name(name: &str, user: bool) -> Result<bool> {
-    let label = ServiceLabel::from_str(name)
-        .map_err(|e| anyhow::anyhow!("无效服务标签 {name}: {e}"))?;
+    let label =
+        ServiceLabel::from_str(name).map_err(|e| anyhow::anyhow!("无效服务标签 {name}: {e}"))?;
     let manager = native_manager(user)?;
     match manager.status(ServiceStatusCtx {
         label: label.clone(),
@@ -199,8 +199,8 @@ fn stop_service_by_name(name: &str, user: bool) -> Result<bool> {
 }
 
 fn uninstall_service_by_name(name: &str, user: bool) -> Result<bool> {
-    let label = ServiceLabel::from_str(name)
-        .map_err(|e| anyhow::anyhow!("无效服务标签 {name}: {e}"))?;
+    let label =
+        ServiceLabel::from_str(name).map_err(|e| anyhow::anyhow!("无效服务标签 {name}: {e}"))?;
     let manager = native_manager(user)?;
     match manager.status(ServiceStatusCtx {
         label: label.clone(),
@@ -306,11 +306,7 @@ pub fn normalize_registry_generation() -> Result<bool> {
 }
 
 pub fn repair_environment(opts: RepairOptions) -> Result<RepairReport> {
-    begin_phase(
-        MigrationPhase::StopOld,
-        None,
-        Some("repair".into()),
-    )?;
+    begin_phase(MigrationPhase::StopOld, None, Some("repair".into()))?;
     let mut report = RepairReport::default();
     let listen = default_listen();
 
@@ -355,11 +351,7 @@ pub fn prepare_install_or_update(user: bool, migrate_data: bool) -> Result<()> {
             );
         }
     }
-    begin_phase(
-        MigrationPhase::Preflight,
-        None,
-        Some("prepare".into()),
-    )?;
+    begin_phase(MigrationPhase::Preflight, None, Some("prepare".into()))?;
     let _ = repair_environment(RepairOptions {
         user,
         migrate_legacy_data: migrate_data,

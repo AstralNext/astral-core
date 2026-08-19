@@ -36,10 +36,7 @@ pub struct RollbackOptions {
 /// 执行产品级更新（不覆盖正在运行的旧版本文件）。
 pub fn update(opts: UpdateOptions) -> Result<()> {
     let reg = registry::load()?;
-    if reg.instances.is_empty()
-        && reg.install_root.is_none()
-        && opts.install_root.is_none()
-    {
+    if reg.instances.is_empty() && reg.install_root.is_none() && opts.install_root.is_none() {
         bail!("没有已安装服务记录，请先 service install（或传入 --install-root）");
     }
 
@@ -51,10 +48,8 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
         None,
     )?;
 
-    let root = layout::resolve_install_root(
-        opts.install_root
-            .or_else(|| reg.install_root.clone()),
-    )?;
+    let root =
+        layout::resolve_install_root(opts.install_root.or_else(|| reg.install_root.clone()))?;
     let source = resolve_program(opts.program)?;
     let version = layout::resolve_version(opts.version.as_deref(), &source)?;
     let instances = &reg.instances;

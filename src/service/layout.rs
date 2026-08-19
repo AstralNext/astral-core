@@ -37,7 +37,11 @@ pub fn default_install_root() -> Result<PathBuf> {
         let local = std::env::var("LOCALAPPDATA")
             .map(PathBuf::from)
             .unwrap_or_else(|_| dirs.data_local_dir().to_path_buf());
-        Ok(local.join("Astral").join("astral-core").join("data").join("app"))
+        Ok(local
+            .join("Astral")
+            .join("astral-core")
+            .join("data")
+            .join("app"))
     }
     #[cfg(not(windows))]
     {
@@ -53,8 +57,7 @@ pub fn resolve_install_root(explicit: Option<PathBuf>) -> Result<PathBuf> {
         Some(p) => std::env::current_dir()?.join(p),
         None => default_install_root()?,
     };
-    fs::create_dir_all(&root)
-        .with_context(|| format!("创建安装根目录失败: {}", root.display()))?;
+    fs::create_dir_all(&root).with_context(|| format!("创建安装根目录失败: {}", root.display()))?;
     Ok(dunce_canonicalize(&root).unwrap_or(root))
 }
 
@@ -125,20 +128,14 @@ pub fn stage_version(root: &Path, version: &str, source: &Path) -> Result<PathBu
     validate_version(version)?;
     let source = resolve_program(Some(source.to_path_buf()))?;
     let dir = version_dir(root, version);
-    fs::create_dir_all(&dir)
-        .with_context(|| format!("创建版本目录失败: {}", dir.display()))?;
+    fs::create_dir_all(&dir).with_context(|| format!("创建版本目录失败: {}", dir.display()))?;
     let dest = version_program(root, version);
     if same_path(&source, &dest) {
         copy_sidecars(&source, &dir)?;
         return Ok(dest);
     }
-    fs::copy(&source, &dest).with_context(|| {
-        format!(
-            "复制二进制失败: {} -> {}",
-            source.display(),
-            dest.display()
-        )
-    })?;
+    fs::copy(&source, &dest)
+        .with_context(|| format!("复制二进制失败: {} -> {}", source.display(), dest.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -232,9 +229,8 @@ fn create_current_link(root: &Path, version: &str) -> Result<()> {
     }
     #[cfg(unix)]
     {
-        std::os::unix::fs::symlink(version, &link).with_context(|| {
-            format!("创建符号链接失败: {} -> {version}", link.display())
-        })?;
+        std::os::unix::fs::symlink(version, &link)
+            .with_context(|| format!("创建符号链接失败: {} -> {version}", link.display()))?;
     }
     let _ = link;
     Ok(())
@@ -248,9 +244,7 @@ fn remove_current_link(link: &Path) -> Result<()> {
     #[cfg(windows)]
     {
         // 目录结必须用 rmdir 去掉链接本身；remove_dir_all 可能误伤目标或拒访
-        let parent = link
-            .parent()
-            .ok_or_else(|| anyhow!("current 无父目录"))?;
+        let parent = link.parent().ok_or_else(|| anyhow!("current 无父目录"))?;
         let name = link
             .file_name()
             .and_then(|s| s.to_str())
@@ -264,8 +258,7 @@ fn remove_current_link(link: &Path) -> Result<()> {
             return Ok(());
         }
         // 若不是结而是普通空目录，再试一次 remove_dir
-        fs::remove_dir(link)
-            .with_context(|| format!("移除 current 失败: {}", link.display()))?;
+        fs::remove_dir(link).with_context(|| format!("移除 current 失败: {}", link.display()))?;
         return Ok(());
     }
 
