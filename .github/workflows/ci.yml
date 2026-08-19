@@ -51,10 +51,13 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $libDir = Join-Path $env:GITHUB_WORKSPACE "astral-core\ci\npcap\Lib\x64"
-          if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
-            throw "Packet.lib not found in $libDir"
+          foreach ($name in @("Packet.lib", "Packet.dll")) {
+            if (!(Test-Path (Join-Path $libDir $name))) {
+              throw "$name not found in $libDir"
+            }
           }
           "LIB=$libDir;$env:LIB" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $libDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: cargo test
         working-directory: astral-core
