@@ -34,6 +34,11 @@ jobs:
           workspaces: astral-core
           shared-key: astral-core-${{ matrix.os }}
 
+      - name: Install protoc
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Install Linux build deps
         if: runner.os == 'Linux'
         run: |
