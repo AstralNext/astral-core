@@ -41,6 +41,9 @@ pub struct InstanceSummary {
     pub network_name: String,
     /// 主机名。
     pub hostname: String,
+    /// 本次运行开始时刻（Unix 毫秒）；未运行时为 null。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<u64>,
 }
 
 /// 列表用轻量元数据。
@@ -58,6 +61,9 @@ pub struct InstanceMeta {
     pub source_path: String,
     /// 错误说明。
     pub error_message: String,
+    /// 本次运行开始时刻（Unix 毫秒）；未运行时为 null。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at_unix_ms: Option<u64>,
 }
 
 /// Peer 摘要。

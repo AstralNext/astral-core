@@ -13,14 +13,14 @@ use service_manager::{
 };
 use tracing::info;
 
-use super::SERVICE_INSTANCE_NAME;
+use super::{SERVICE_GENERATION, SERVICE_QUALIFIED_NAME};
 
 /// 安装选项。
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
     /// gRPC 监听地址（仅本机）。
     pub listen: SocketAddr,
-    /// 可选数据目录；缺省为平台数据目录下 `instances/default`。
+    /// 可选数据目录；缺省为平台数据根目录。
     pub data_dir: Option<PathBuf>,
     /// 要落入布局的源二进制；缺省为当前进程。
     pub program: Option<PathBuf>,
@@ -39,24 +39,28 @@ pub struct InstallOptions {
 /// 启停 / 卸载 / 状态查询的公共选项。
 #[derive(Debug, Clone)]
 pub struct ServiceActionOptions {
-    /// 实例名（固定 `default`）。
-    pub name: String,
     /// 用户级服务。
     pub user: bool,
 }
 
-/// 生成服务标签 `dev.astral.core-default`。
-pub fn service_label(name: &str) -> Result<ServiceLabel> {
-    if name != SERVICE_INSTANCE_NAME {
-        bail!("本机仅支持单例服务 `{SERVICE_INSTANCE_NAME}`，收到: {name}");
-    }
-    let qualified = format!("dev.astral.core-{name}");
-    ServiceLabel::from_str(&qualified).map_err(|e| anyhow!("无效服务标签 {qualified}: {e}"))
+/// 卸载选项。
+#[derive(Debug, Clone)]
+pub struct UninstallOptions {
+    /// 用户级服务。
+    pub user: bool,
+    /// 删除数据根（危险，需显式指定）。
+    pub purge_data: bool,
+}
+
+/// 生成服务标签 `dev.astral.core`。
+pub fn service_label() -> Result<ServiceLabel> {
+    ServiceLabel::from_str(SERVICE_QUALIFIED_NAME)
+        .map_err(|e| anyhow!("无效服务标签 {SERVICE_QUALIFIED_NAME}: {e}"))
 }
 
 /// 人类可读的服务标识。
-pub fn status_label(name: &str) -> Result<String> {
-    let label = service_label(name)?;
+pub fn status_label() -> Result<String> {
+    let label = service_label()?;
     Ok(format!(
         "qualified={} script={}",
         label.to_qualified_name(),
@@ -104,16 +108,16 @@ pub(crate) fn dunce_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
     Ok(p)
 }
 
-fn default_instance_data_dir() -> Result<PathBuf> {
+fn default_service_data_dir() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
         .ok_or_else(|| anyhow!("无法解析平台数据目录"))?;
-    Ok(dirs.data_dir().join("instances").join(SERVICE_INSTANCE_NAME))
+    Ok(dirs.data_dir().to_path_buf())
 }
 
 fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {
     let dir = match explicit {
         Some(p) => p,
-        None => default_instance_data_dir()?,
+        None => default_service_data_dir()?,
     };
     let dir = if dir.as_os_str().is_empty() {
         bail!("data-dir 不能为空");
@@ -140,13 +144,20 @@ fn build_service_args(listen: SocketAddr, data_dir: &Path, label: &ServiceLabel)
     args.push(OsString::from(listen.to_string()));
     args.push(OsString::from("--data-dir"));
     args.push(data_dir.as_os_str().to_os_string());
+    args.push(OsString::from("--service-generation"));
+    args.push(OsString::from(SERVICE_GENERATION));
     args
 }
 
 /// 安装系统服务（先落入并排版本布局，服务指向 `current`）。
 pub fn install(opts: InstallOptions) -> Result<()> {
-    let name = SERVICE_INSTANCE_NAME;
-    let label = service_label(name)?;
+    super::cleanup::prepare_install_or_update(opts.user, true)?;
+    super::recovery::begin_phase(
+        super::recovery::MigrationPhase::StageNewVersion,
+        opts.version.clone(),
+        None,
+    )?;
+    let label = service_label()?;
     let source = resolve_program(opts.program)?;
     let root = super::layout::resolve_install_root(opts.install_root)?;
     let version = super::layout::resolve_version(opts.version.as_deref(), &source)?;
@@ -188,7 +199,6 @@ pub fn install(opts: InstallOptions) -> Result<()> {
         &root,
         &version,
         &program,
-        name,
         opts.listen,
         &data_dir,
         opts.user,
@@ -205,12 +215,20 @@ pub fn install(opts: InstallOptions) -> Result<()> {
         info!(service = %label.to_qualified_name(), "服务已安装（未启动）");
     }
 
+    super::recovery::begin_phase(super::recovery::MigrationPhase::Done, Some(version), None)?;
+    let _ = super::recovery::clear_state();
     Ok(())
 }
 
-/// 卸载系统服务。
-pub fn uninstall(opts: ServiceActionOptions) -> Result<()> {
-    let label = service_label(&opts.name)?;
+/// 卸载系统服务并清理残留。
+pub fn uninstall(opts: UninstallOptions) -> Result<()> {
+    uninstall_service_only(ServiceActionOptions { user: opts.user })?;
+    super::cleanup::cleanup_after_uninstall(opts.user, opts.purge_data)?;
+    Ok(())
+}
+
+fn uninstall_service_only(opts: ServiceActionOptions) -> Result<()> {
+    let label = service_label()?;
     let manager = native_manager(opts.user)?;
     let _ = manager.stop(ServiceStopCtx {
         label: label.clone(),
@@ -220,15 +238,15 @@ pub fn uninstall(opts: ServiceActionOptions) -> Result<()> {
             label: label.clone(),
         })
         .with_context(|| format!("卸载服务失败: {}", label.to_qualified_name()))?;
-    super::registry::record_uninstall(&opts.name, opts.user)
-        .with_context(|| format!("更新服务登记失败: {}", opts.name))?;
+    super::registry::record_uninstall(opts.user)
+        .with_context(|| "更新服务登记失败")?;
     info!(service = %label.to_qualified_name(), "服务已卸载");
     Ok(())
 }
 
 /// 启动已安装服务。
 pub fn start(opts: ServiceActionOptions) -> Result<()> {
-    let label = service_label(&opts.name)?;
+    let label = service_label()?;
     let manager = native_manager(opts.user)?;
     manager
         .start(ServiceStartCtx {
@@ -241,7 +259,7 @@ pub fn start(opts: ServiceActionOptions) -> Result<()> {
 
 /// 停止服务。
 pub fn stop(opts: ServiceActionOptions) -> Result<()> {
-    let label = service_label(&opts.name)?;
+    let label = service_label()?;
     let manager = native_manager(opts.user)?;
     manager
         .stop(ServiceStopCtx {
@@ -254,7 +272,7 @@ pub fn stop(opts: ServiceActionOptions) -> Result<()> {
 
 /// 查询服务状态。
 pub fn status(opts: ServiceActionOptions) -> Result<ServiceStatus> {
-    let label = service_label(&opts.name)?;
+    let label = service_label()?;
     let manager = native_manager(opts.user)?;
     manager
         .status(ServiceStatusCtx { label })

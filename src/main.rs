@@ -10,7 +10,8 @@ use tracing_subscriber::EnvFilter;
 
 use astral_core::config::require_local_listen;
 use astral_core::service::{
-    self, InstallOptions, RunParams, SERVICE_INSTANCE_NAME, ServiceActionOptions, UpdateOptions,
+    self, health_report_json, repair_environment, InstallOptions, RepairOptions, RunParams,
+    ServiceActionOptions, UninstallOptions, UpdateOptions,
 };
 
 /// Astral 本机内核：嵌入 EasyTier，对本机 GUI 提供 JSON-RPC。
@@ -52,6 +53,10 @@ struct RunCli {
     /// Windows：由 SCM 拉起时使用（安装服务时自动写入，勿手动调用）
     #[arg(long, value_name = "SERVICE_NAME", hide = true)]
     windows_service: Option<String>,
+
+    /// 服务代际（安装服务时自动写入，勿手动调用）
+    #[arg(long, hide = true)]
+    service_generation: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -62,7 +67,7 @@ enum ServiceCommand {
         #[arg(long, default_value = "127.0.0.1:50051")]
         listen: SocketAddr,
 
-        /// 数据目录；缺省为平台数据目录下 instances/default
+        /// 数据目录；缺省为平台数据根目录
         #[arg(long)]
         data_dir: Option<PathBuf>,
 
@@ -94,6 +99,10 @@ enum ServiceCommand {
     Uninstall {
         #[arg(long)]
         user: bool,
+
+        /// 同时删除数据根（危险）
+        #[arg(long)]
+        purge_data: bool,
     },
     /// 启动已安装服务
     Start {
@@ -109,6 +118,20 @@ enum ServiceCommand {
     Status {
         #[arg(long)]
         user: bool,
+    },
+    /// 输出 JSON 服务体检报告
+    Doctor {
+        #[arg(long)]
+        user: bool,
+    },
+    /// 清理旧服务 / 旧进程 / 迁移 legacy 数据
+    Repair {
+        #[arg(long)]
+        user: bool,
+
+        /// 迁移 instances/default 到数据根
+        #[arg(long)]
+        migrate_legacy_data: bool,
     },
     /// 落入新版本并重启本机服务
     Update {
@@ -178,10 +201,7 @@ fn run_entry(run: RunCli) -> anyhow::Result<()> {
 }
 
 fn default_action(user: bool) -> ServiceActionOptions {
-    ServiceActionOptions {
-        name: SERVICE_INSTANCE_NAME.to_string(),
-        user,
-    }
+    ServiceActionOptions { user }
 }
 
 fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
@@ -207,8 +227,8 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
                 start_after_install: !no_start,
             })?;
         }
-        ServiceCommand::Uninstall { user } => {
-            service::uninstall(default_action(user))?;
+        ServiceCommand::Uninstall { user, purge_data } => {
+            service::uninstall(UninstallOptions { user, purge_data })?;
         }
         ServiceCommand::Start { user } => {
             service::start(default_action(user))?;
@@ -217,7 +237,7 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
             service::stop(default_action(user))?;
         }
         ServiceCommand::Status { user } => {
-            let meta = service::status_label(SERVICE_INSTANCE_NAME)?;
+            let meta = service::status_label()?;
             let st = service::status(default_action(user))?;
             let text = match &st {
                 ServiceStatus::NotInstalled => "not-installed",
@@ -231,6 +251,27 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
                 },
             };
             println!("{text} ({meta})");
+        }
+        ServiceCommand::Doctor { user } => {
+            println!("{}", health_report_json(user)?);
+        }
+        ServiceCommand::Repair {
+            user,
+            migrate_legacy_data,
+        } => {
+            let report = repair_environment(RepairOptions {
+                user,
+                migrate_legacy_data,
+            })?;
+            println!(
+                "repair: stopped_current={} uninstalled_legacy={} killed_listeners={} migrated_data={} removed_legacy_dir={} normalized_registry={}",
+                report.stopped_current_service,
+                report.uninstalled_legacy_service,
+                report.killed_stale_listeners,
+                report.migrated_legacy_data,
+                report.removed_legacy_data_dir,
+                report.normalized_registry,
+            );
         }
         ServiceCommand::Update {
             program,

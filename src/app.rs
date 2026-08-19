@@ -29,7 +29,7 @@ pub struct AppState {
 impl AppState {
     /// 根据运行配置加载/初始化状态。
     pub fn bootstrap(runtime: RuntimeConfig) -> CoreResult<Self> {
-        Self::bootstrap_with_log_filter(runtime, "info")
+        Self::bootstrap_with_log_filter(runtime, crate::logging::DEFAULT_LOG_FILTER)
     }
 
     /// 与 [`Self::bootstrap`] 相同，并按 `log_filter` 安装 tracing。

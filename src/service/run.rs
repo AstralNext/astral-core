@@ -7,6 +7,7 @@ use tracing::{info, warn};
 
 use crate::app::AppState;
 use crate::config::{require_local_listen, RuntimeConfigBuilder};
+use crate::discovery;
 use crate::error::CoreResult;
 use crate::rpc;
 
@@ -43,6 +44,7 @@ pub fn bootstrap_runtime(params: &RunParams) -> CoreResult<AppState> {
 /// 前台运行：本机 JSON-RPC；捕获信号后退出。
 pub async fn run_foreground(params: RunParams) -> CoreResult<()> {
     let state = bootstrap_runtime(&params)?;
+    tokio::spawn(discovery::serve_discovery(state.runtime.listen));
     rpc::serve_with_shutdown(state, shutdown_signal()).await
 }
 

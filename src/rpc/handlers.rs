@@ -36,6 +36,8 @@ struct LogsRecentParams {
     after: u64,
     #[serde(default = "default_log_limit")]
     limit: u32,
+    #[serde(default)]
+    instance_id: String,
 }
 
 fn default_log_limit() -> u32 {
@@ -137,6 +139,7 @@ async fn instance_list_meta(state: &AppState, params: Value) -> CoreResult<Value
             running: s.running,
             source_path: cached.map(|c| c.source_path).unwrap_or_default(),
             error_message: s.error_message,
+            started_at_unix_ms: s.started_at_unix_ms,
         });
     }
     Ok(json!({ "metas": metas }))
@@ -169,7 +172,11 @@ async fn network_status(state: &AppState, params: Value) -> CoreResult<Value> {
 fn logs_recent(state: &AppState, params: Value) -> CoreResult<Value> {
     let p: LogsRecentParams = parse(params)?;
     let limit = if p.limit == 0 { 200 } else { p.limit.min(2000) } as usize;
-    let lines = state.logs.recent_since(p.after, limit);
+    let lines = if p.instance_id.trim().is_empty() {
+        state.logs.recent_since(p.after, limit)
+    } else {
+        state.logs.recent_since_for_instance(p.after, limit, p.instance_id.trim())
+    };
     let last_seq = lines.last().map(|l| l.seq).unwrap_or(p.after);
     Ok(json!({ "lines": lines, "last_seq": last_seq }))
 }

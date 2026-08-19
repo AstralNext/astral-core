@@ -28,11 +28,21 @@ pub fn binary_name() -> &'static str {
     }
 }
 
-/// 默认安装根目录（平台 Local 数据目录下的 `app`）。
+/// 默认安装根目录（与 GUI 对齐）。
 pub fn default_install_root() -> Result<PathBuf> {
     let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
         .ok_or_else(|| anyhow!("无法解析平台数据目录"))?;
-    Ok(dirs.data_local_dir().join("app"))
+    #[cfg(windows)]
+    {
+        let local = std::env::var("LOCALAPPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| dirs.data_local_dir().to_path_buf());
+        Ok(local.join("Astral").join("astral-core").join("data").join("app"))
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(dirs.data_local_dir().join("app"))
+    }
 }
 
 /// 解析安装根；相对路径基于当前工作目录。

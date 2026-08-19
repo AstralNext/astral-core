@@ -57,19 +57,16 @@ fn read_marker(path: &Path) -> String {
 }
 
 #[test]
-fn validate_version_and_instance_label() {
+fn validate_version_and_service_label() {
     assert!(validate_version("0.1.0").is_ok());
     assert!(validate_version("1.2.3-beta").is_ok());
     assert!(validate_version("current").is_err());
     assert!(validate_version("../x").is_err());
     assert!(validate_version("").is_err());
 
-    assert!(service_label("default").is_ok());
-    assert!(service_label("edge-1").is_err());
-    assert!(service_label("-bad").is_err());
-    let label = service_label("default").unwrap();
-    assert_eq!(label.to_qualified_name(), "dev.astral.core-default");
-    assert_eq!(label.to_script_name(), "astral-core-default");
+    let label = service_label().unwrap();
+    assert_eq!(label.to_qualified_name(), "dev.astral.core");
+    assert_eq!(label.to_script_name(), "astral-core");
 }
 
 #[test]
@@ -232,7 +229,6 @@ fn registry_record_install_and_uninstall() {
         &install,
         "0.1.0",
         &prog,
-        "default",
         "127.0.0.1:50051".parse().unwrap(),
         &data,
         false,
@@ -241,10 +237,10 @@ fn registry_record_install_and_uninstall() {
 
     let reg = load_service_registry().unwrap();
     assert_eq!(reg.instances.len(), 1);
-    assert_eq!(reg.instances[0].name, "default");
+    assert_eq!(reg.instances[0].name, "core");
     assert_eq!(reg.active_version.as_deref(), Some("0.1.0"));
 
-    record_uninstall("default", false).unwrap();
+    record_uninstall(false).unwrap();
     let reg = load_service_registry().unwrap();
     assert!(reg.instances.is_empty());
     assert!(reg.install_root.is_none());
@@ -268,7 +264,6 @@ fn registry_rejects_conflicting_install_root() {
         &install_a,
         "0.1.0",
         &prog_a,
-        "default",
         "127.0.0.1:50051".parse().unwrap(),
         &data,
         false,
@@ -281,7 +276,6 @@ fn registry_rejects_conflicting_install_root() {
         &install_b,
         "0.1.0",
         &prog_b,
-        "other",
         "127.0.0.1:50052".parse().unwrap(),
         &data,
         false,
@@ -294,7 +288,7 @@ fn registry_rejects_conflicting_install_root() {
 }
 
 #[test]
-fn registry_rejects_second_service_name() {
+fn registry_updates_existing_service_record() {
     let _reg = RegistryGuard::new();
     let tmp = TempDir::new().unwrap();
     let install = tmp.path().join("app");
@@ -308,27 +302,24 @@ fn registry_rejects_second_service_name() {
         &install,
         "0.1.0",
         &src,
-        "default",
         "127.0.0.1:50051".parse().unwrap(),
         &data,
         false,
     )
     .unwrap();
 
-    let err = record_install(
+    record_install(
         &install,
-        "0.1.0",
+        "0.1.1",
         &src,
-        "other",
         "127.0.0.1:50052".parse().unwrap(),
         &data,
         false,
     )
-    .unwrap_err();
-    assert!(
-        err.to_string().contains("单例"),
-        "unexpected err: {err}"
-    );
+    .unwrap();
+    let reg = load_service_registry().unwrap();
+    assert_eq!(reg.instances.len(), 1);
+    assert_eq!(reg.instances[0].listen.port(), 50052);
 }
 
 /// 真实 OS 服务安装（需管理员 / 会改系统）。默认忽略，手动：
@@ -371,15 +362,14 @@ fn os_service_install_uninstall() {
     .expect("install");
 
     let st = service::status(service::ServiceActionOptions {
-        name: "default".into(),
         user: cfg!(not(windows)),
     })
     .expect("status");
     eprintln!("status after install: {st:?}");
 
-    service::uninstall(service::ServiceActionOptions {
-        name: "default".into(),
+    service::uninstall(service::UninstallOptions {
         user: cfg!(not(windows)),
+        purge_data: false,
     })
     .expect("uninstall");
 }

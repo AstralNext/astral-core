@@ -7,6 +7,8 @@ use anyhow::{anyhow, Context, Result};
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 
+use super::SERVICE_REGISTRY_KEY;
+
 /// 全局服务登记文件内容。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceRegistry {
@@ -19,6 +21,9 @@ pub struct ServiceRegistry {
     /// 服务登记的稳定 exe：`{install_root}/current/astral-core[.exe]`。
     #[serde(default)]
     pub program: Option<PathBuf>,
+    /// 服务代际（用于识别旧进程）。
+    #[serde(default)]
+    pub service_generation: Option<String>,
     /// 已安装实例。
     #[serde(default)]
     pub instances: Vec<InstalledInstance>,
@@ -87,6 +92,11 @@ pub fn load() -> Result<ServiceRegistry> {
 }
 
 fn save(reg: &ServiceRegistry) -> Result<()> {
+    save_raw(reg)
+}
+
+/// 写入登记（供清理 / 迁移模块使用）。
+pub fn save_raw(reg: &ServiceRegistry) -> Result<()> {
     let path = registry_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -99,12 +109,11 @@ fn save(reg: &ServiceRegistry) -> Result<()> {
     Ok(())
 }
 
-/// 安装成功后写入实例，并记录布局信息。
+/// 安装成功后写入服务记录，并记录布局信息。
 pub fn record_install(
     install_root: &Path,
     active_version: &str,
     program: &Path,
-    name: &str,
     listen: SocketAddr,
     data_dir: &Path,
     user: bool,
@@ -125,19 +134,14 @@ pub fn record_install(
     reg.install_root = Some(install_root);
     reg.active_version = Some(active_version.to_string());
     reg.program = Some(program);
+    reg.service_generation = Some(super::SERVICE_GENERATION.to_string());
     if let Some(existing) = reg.instances.first_mut() {
-        if existing.name != name {
-            return Err(anyhow!(
-                "已安装服务 {}，本机仅支持单例 `{name}`",
-                existing.name
-            ));
-        }
         existing.listen = listen;
         existing.data_dir = data_dir;
         existing.user = user;
     } else {
         reg.instances.push(InstalledInstance {
-            name: name.to_string(),
+            name: SERVICE_REGISTRY_KEY.to_string(),
             listen,
             data_dir,
             user,
@@ -146,15 +150,16 @@ pub fn record_install(
     save(&reg)
 }
 
-/// 卸载后移除实例；若无实例则清空布局字段。
-pub fn record_uninstall(name: &str, user: bool) -> Result<()> {
+/// 卸载后移除服务记录；若无记录则清空布局字段。
+pub fn record_uninstall(user: bool) -> Result<()> {
     let mut reg = load()?;
     reg.instances
-        .retain(|i| !(i.name == name && i.user == user));
+        .retain(|i| !(i.name == SERVICE_REGISTRY_KEY && i.user == user));
     if reg.instances.is_empty() {
         reg.program = None;
         reg.install_root = None;
         reg.active_version = None;
+        reg.service_generation = None;
     }
     save(&reg)
 }

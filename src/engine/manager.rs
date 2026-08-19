@@ -1,6 +1,7 @@
 //! 对 EasyTier [`NetworkInstanceManager`] 的封装。
 
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use easytier::common::config::{ConfigFileControl, ConfigLoader, TomlConfigLoader};
 use easytier::instance_manager::NetworkInstanceManager;
@@ -29,6 +30,24 @@ impl EngineHandle {
             manager: Arc::new(NetworkInstanceManager::new()),
             cache,
         }
+    }
+
+    fn now_unix_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    fn started_at_for(&self, id: Uuid, running: bool) -> Option<u64> {
+        if !running {
+            return None;
+        }
+        self.cache
+            .get_uuid(id)
+            .ok()
+            .flatten()
+            .and_then(|c| c.started_at_unix_ms)
     }
 
     /// 底层管理器。
@@ -93,11 +112,17 @@ impl EngineHandle {
     ) -> CoreResult<Uuid> {
         let id = cfg.get_id();
         if self.exists(id) {
+            let started_at = self
+                .cache
+                .get_uuid(id)?
+                .and_then(|c| c.started_at_unix_ms)
+                .or(Some(Self::now_unix_ms()));
             self.cache.upsert(CachedInstance {
                 instance_id: id.to_string(),
                 toml,
                 display_name: display_name.to_string(),
                 source_path: source_path.to_string(),
+                started_at_unix_ms: started_at,
             })?;
             return Ok(id);
         }
@@ -110,6 +135,7 @@ impl EngineHandle {
             toml,
             display_name: display_name.to_string(),
             source_path: source_path.to_string(),
+            started_at_unix_ms: Some(Self::now_unix_ms()),
         })?;
         Ok(id)
     }
@@ -122,6 +148,10 @@ impl EngineHandle {
         self.manager
             .delete_network_instance(vec![id])
             .map_err(|e| CoreError::Internal(format!("停止实例失败: {e}")))?;
+        if let Some(mut rec) = self.cache.get_uuid(id)? {
+            rec.started_at_unix_ms = None;
+            self.cache.upsert(rec)?;
+        }
         Ok(())
     }
 
@@ -244,6 +274,7 @@ impl EngineHandle {
                 dev_name: optional_string(info.dev_name.clone()),
                 network_name: String::new(),
                 hostname,
+                started_at_unix_ms: self.started_at_for(id, running),
             };
         }
         if self.list_ids().contains(&id) {
@@ -262,6 +293,7 @@ impl EngineHandle {
                 dev_name: String::new(),
                 network_name: String::new(),
                 hostname: String::new(),
+                started_at_unix_ms: self.started_at_for(id, true),
             };
         }
         InstanceSummary {
@@ -273,6 +305,7 @@ impl EngineHandle {
             dev_name: String::new(),
             network_name: String::new(),
             hostname: String::new(),
+            started_at_unix_ms: None,
         }
     }
 

@@ -94,8 +94,7 @@ $svcArgs = @(
 
 function Copy-WintunToCurrent {
   $roots = @(
-    (Join-Path $env:LOCALAPPDATA 'Astral\astral-core\data\app'),
-    (Join-Path $env:LOCALAPPDATA 'Astral\astral-core\app')
+    (Join-Path $env:LOCALAPPDATA 'Astral\astral-core\data\app')
   )
   $wsrc = Join-Path $binDir 'wintun.dll'
   foreach ($root in $roots) {
@@ -120,7 +119,7 @@ Write-Host '[+] service installed'
   $p = Start-Process powershell.exe -Verb RunAs -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',$scriptFile) -Wait -PassThru
   if ($p.ExitCode -ne 0) { throw "提权安装失败: $($p.ExitCode)" }
   Copy-WintunToCurrent
-  Write-Ok "服务已安装: dev.astral.core-default"
+  Write-Ok "服务已安装: dev.astral.core"
   Write-Host "监听: $Listen（仅本机）"
   Write-Host "状态: astral-core service status"
   return

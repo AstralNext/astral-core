@@ -19,6 +19,10 @@ name = "rpc_integration"
 path = "tests/rpc_integration/main.rs"
 
 [[test]]
+name = "service_cleanup"
+path = "tests/service_cleanup.rs"
+
+[[test]]
 name = "service_lifecycle"
 path = "tests/service_lifecycle.rs"
 

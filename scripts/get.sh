@@ -114,6 +114,6 @@ info "正在安装用户级系统服务"
 # shellcheck disable=SC2086
 ${BIN_DIR}/astral-core $ARGS
 
-ok "服务已安装: dev.astral.core-default"
+ok "服务已安装: dev.astral.core"
 echo "监听: ${LISTEN}（仅本机）"
 echo "状态: astral-core service status --user"

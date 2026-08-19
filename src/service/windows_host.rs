@@ -15,6 +15,7 @@ use windows_service::service_control_handler::{self, ServiceControlHandlerResult
 use windows_service::service_dispatcher;
 
 use super::run::{bootstrap_runtime, RunParams};
+use crate::discovery;
 use crate::rpc;
 
 static SERVICE_NAME: OnceLock<String> = OnceLock::new();
@@ -126,6 +127,8 @@ fn run_service() -> Result<()> {
             let _ = shutdown_rx.recv();
             let _ = async_stop_tx.send(());
         });
+
+        tokio::spawn(discovery::serve_discovery(state.runtime.listen));
 
         rpc::serve_with_shutdown(state, async move {
             let _ = async_stop_rx.await;

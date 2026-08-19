@@ -31,7 +31,7 @@ pub struct LogLine {
     pub instance_id: String,
 }
 
-const RING_CAP: usize = 2000;
+const RING_CAP: usize = 4000;
 
 static SINKS: Mutex<Vec<Weak<LogHubInner>>> = Mutex::new(Vec::new());
 static INSTALLED: OnceLock<()> = OnceLock::new();
@@ -47,6 +47,9 @@ pub struct LogHub {
     inner: std::sync::Arc<LogHubInner>,
 }
 
+/// astral-core 与 EasyTier（`CORE` target）默认采集级别。
+pub const DEFAULT_LOG_FILTER: &str = "info,astral_core=info,CORE=info";
+
 impl LogHub {
     /// 创建中枢并尽量安装全局 tracing（fmt + 采集层）。多次调用时后续 `try_init` 会被忽略。
     pub fn install(filter: &str) -> Self {
@@ -61,7 +64,8 @@ impl LogHub {
             sinks.push(std::sync::Arc::downgrade(&hub.inner));
         }
         let _ = INSTALLED.get_or_init(|| {
-            let env = EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new("info"));
+            let env =
+                EnvFilter::try_new(filter).unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
             let _ = tracing_subscriber::registry()
                 .with(env)
                 .with(fmt::layer().with_target(true))
@@ -73,14 +77,37 @@ impl LogHub {
 
     /// 环形缓冲中 `seq > after` 的日志；`after=0` 时返回最近 `limit` 条。
     pub fn recent_since(&self, after: u64, limit: usize) -> Vec<LogLine> {
+        self.recent_since_filtered(after, limit, None)
+    }
+
+    /// 按实例过滤的最近日志。
+    pub fn recent_since_for_instance(
+        &self,
+        after: u64,
+        limit: usize,
+        instance_id: &str,
+    ) -> Vec<LogLine> {
+        self.recent_since_filtered(after, limit, Some(instance_id))
+    }
+
+    fn recent_since_filtered(
+        &self,
+        after: u64,
+        limit: usize,
+        instance_id: Option<&str>,
+    ) -> Vec<LogLine> {
         let limit = limit.clamp(1, 2000);
         let Ok(buf) = self.inner.recent.lock() else {
             return Vec::new();
+        };
+        let matches = |line: &LogLine| {
+            instance_id.map_or(true, |id| !id.is_empty() && line.instance_id == id)
         };
         if after == 0 {
             return buf
                 .iter()
                 .rev()
+                .filter(|l| matches(l))
                 .take(limit)
                 .cloned()
                 .collect::<Vec<_>>()
@@ -89,7 +116,7 @@ impl LogHub {
                 .collect();
         }
         buf.iter()
-            .filter(|l| l.seq > after)
+            .filter(|l| l.seq > after && matches(l))
             .take(limit)
             .cloned()
             .collect()
@@ -115,13 +142,17 @@ where
     fn on_event(&self, event: &Event<'_>, _ctx: Context<'_, S>) {
         let mut vis = FieldCollector::default();
         event.record(&mut vis);
+        let (message, instance_id) = vis.finalize();
+        if message.is_empty() || is_noise(&message) {
+            return;
+        }
         let line = LogLine {
             seq: 0,
             unix_secs: now_unix_secs(),
             level: format!("{}", event.metadata().level()).to_ascii_lowercase(),
             target: event.metadata().target().to_string(),
-            message: vis.message,
-            instance_id: vis.instance_id,
+            message,
+            instance_id,
         };
         if let Ok(mut sinks) = SINKS.lock() {
             sinks.retain(|w| w.strong_count() > 0);
@@ -138,21 +169,67 @@ where
 struct FieldCollector {
     message: String,
     instance_id: String,
+    parts: Vec<String>,
 }
 
 impl FieldCollector {
     fn put(&mut self, name: &str, value: String) {
+        if value.is_empty() {
+            return;
+        }
         if name == "message" {
             self.message = value;
         } else if name == "instance_id" {
             self.instance_id = value;
+        } else if name.starts_with("log.") {
+            // tracing 内部字段
+        } else {
+            self.parts.push(if name.is_empty() {
+                value
+            } else {
+                format!("{name}={value}")
+            });
         }
     }
+
+    fn finalize(self) -> (String, String) {
+        let mut message = if !self.message.is_empty() {
+            self.message
+        } else {
+            self.parts.join(" ")
+        };
+        let mut instance_id = self.instance_id;
+        if instance_id.is_empty() {
+            if let Some((id, rest)) = peel_instance_prefix(&message) {
+                instance_id = id;
+                message = rest;
+            }
+        }
+        (message.trim().to_string(), instance_id)
+    }
+}
+
+/// EasyTier 事件日志形如 `[uuid] peer connected`。
+fn peel_instance_prefix(message: &str) -> Option<(String, String)> {
+    let trimmed = message.trim_start();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let end = trimmed.find(']')?;
+    let id = trimmed[1..end].trim();
+    if uuid::Uuid::parse_str(id).is_err() {
+        return None;
+    }
+    let rest = trimmed[end + 1..].trim_start();
+    Some((id.to_string(), rest.to_string()))
 }
 
 impl Visit for FieldCollector {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        self.put(field.name(), format!("{value:?}").trim_matches('"').to_string());
+        self.put(
+            field.name(),
+            format!("{value:?}").trim_matches('"').to_string(),
+        );
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
@@ -172,9 +249,46 @@ impl Visit for FieldCollector {
     }
 }
 
+/// EasyTier 内部维护日志，对用户无意义。
+fn is_noise(message: &str) -> bool {
+    message.contains("Retained buckets:")
+        || message.contains("shrink_to_fit")
+        || message.contains("no peer id for ip")
+}
+
 fn now_unix_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peel_instance_prefix_parses_easytier_event() {
+        let id = "22222222-2222-4222-8222-222222222222";
+        let (parsed, rest) = peel_instance_prefix(&format!(
+            "[{id}] new peer connection added"
+        ))
+        .expect("prefix");
+        assert_eq!(parsed, id);
+        assert_eq!(rest, "new peer connection added");
+    }
+
+    #[test]
+    fn field_collector_builds_message_from_structured_fields() {
+        let mut vis = FieldCollector::default();
+        vis.put("local", "127.0.0.1:11001".into());
+        vis.put("remote", "127.0.0.1:11002".into());
+        vis.put(
+            "message",
+            "[22222222-2222-4222-8222-222222222222] new connection accepted".into(),
+        );
+        let (msg, id) = vis.finalize();
+        assert_eq!(id, "22222222-2222-4222-8222-222222222222");
+        assert_eq!(msg, "new connection accepted");
+    }
 }

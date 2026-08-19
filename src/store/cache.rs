@@ -19,6 +19,9 @@ pub struct CachedInstance {
     pub display_name: String,
     /// 来源路径（可选）。
     pub source_path: String,
+    /// 本次运行开始时刻（Unix 毫秒）；停止后清空。
+    #[serde(default)]
+    pub started_at_unix_ms: Option<u64>,
 }
 
 /// 线程安全的实例配置缓存。

@@ -43,6 +43,14 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
         bail!("没有已安装服务记录，请先 service install（或传入 --install-root）");
     }
 
+    let user = reg.instances.first().map(|i| i.user).unwrap_or(false);
+    super::cleanup::prepare_install_or_update(user, false)?;
+    super::recovery::begin_phase(
+        super::recovery::MigrationPhase::StageNewVersion,
+        opts.version.clone(),
+        None,
+    )?;
+
     let root = layout::resolve_install_root(
         opts.install_root
             .or_else(|| reg.install_root.clone()),
@@ -64,10 +72,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
     // 同版本覆盖会锁住正在运行的 exe：先停再 stage
     if same_version {
         for inst in instances {
-            let _ = stop(ServiceActionOptions {
-                name: inst.name.clone(),
-                user: inst.user,
-            });
+            let _ = stop(ServiceActionOptions { user: inst.user });
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
     }
@@ -76,10 +81,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
 
     if !same_version {
         for inst in instances {
-            let _ = stop(ServiceActionOptions {
-                name: inst.name.clone(),
-                user: inst.user,
-            });
+            let _ = stop(ServiceActionOptions { user: inst.user });
         }
     }
 
@@ -87,10 +89,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
         // 切换失败：尽量把已停的实例拉起来，避免长期停机
         if !opts.no_start {
             for inst in instances {
-                let _ = start(ServiceActionOptions {
-                    name: inst.name.clone(),
-                    user: inst.user,
-                });
+                let _ = start(ServiceActionOptions { user: inst.user });
             }
         }
         return Err(e);
@@ -101,10 +100,7 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
 
     if !opts.no_start {
         for inst in instances {
-            start(ServiceActionOptions {
-                name: inst.name.clone(),
-                user: inst.user,
-            })?;
+            start(ServiceActionOptions { user: inst.user })?;
         }
     }
 
@@ -113,6 +109,8 @@ pub fn update(opts: UpdateOptions) -> Result<()> {
         program = %program.display(),
         "自动更新完成"
     );
+    super::recovery::begin_phase(super::recovery::MigrationPhase::Done, Some(version), None)?;
+    let _ = super::recovery::clear_state();
     Ok(())
 }
 
@@ -154,11 +152,8 @@ pub fn rollback(opts: RollbackOptions) -> Result<()> {
     let instances = &reg.instances;
     info!(version = %target, "开始回滚");
 
-            for inst in instances {
-        let _ = stop(ServiceActionOptions {
-            name: inst.name.clone(),
-            user: inst.user,
-        });
+    for inst in instances {
+        let _ = stop(ServiceActionOptions { user: inst.user });
     }
 
     layout::switch_current(&root, &target)?;
@@ -167,10 +162,7 @@ pub fn rollback(opts: RollbackOptions) -> Result<()> {
 
     if !opts.no_start {
         for inst in instances {
-            start(ServiceActionOptions {
-                name: inst.name.clone(),
-                user: inst.user,
-            })?;
+            start(ServiceActionOptions { user: inst.user })?;
         }
     }
 
