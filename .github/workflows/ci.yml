@@ -47,7 +47,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           $sdkZip = Join-Path $env:RUNNER_TEMP "npcap-sdk.zip"
           $sdkDir = Join-Path $env:RUNNER_TEMP "npcap-sdk"
-          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.15.zip" -OutFile $sdkZip
+          Invoke-WebRequest -Uri "https://npcap.com/dist/npcap-sdk-1.16.zip" -OutFile $sdkZip
           Expand-Archive -Path $sdkZip -DestinationPath $sdkDir -Force
           $libDir = Join-Path $sdkDir "Lib\x64"
           if (!(Test-Path (Join-Path $libDir "Packet.lib"))) {
