@@ -1,7 +1,8 @@
 # 多平台编译 astral-core，上传到 GitHub Releases。
 #
 # 触发：
-#   - 推送 tag：v*（如 v0.1.0）
+#   - 推送 main：覆盖滚动预发布 nightly（GUI CI 始终下这个）
+#   - 推送 tag：v*（如 v0.1.0，GitHub Latest）
 #   - 手动 workflow_dispatch（可选指定 tag 名）
 #
 # 产物命名（GUI 按此匹配）：
@@ -13,6 +14,7 @@ name: release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
     inputs:
@@ -186,13 +188,29 @@ jobs:
         id: meta
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "tag=nightly" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.tag }}" ]; then
             echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            echo "make_latest=true" >> "$GITHUB_OUTPUT"
           else
             echo "tag=release-run-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "make_latest=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Drop previous nightly
+        if: steps.meta.outputs.tag == 'nightly'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release delete nightly --yes --cleanup-tag || true
 
       - name: Download all assets
         uses: actions/download-artifact@v4
@@ -236,8 +254,12 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           name: astral-core ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ steps.meta.outputs.prerelease == 'true' }}
+          make_latest: ${{ steps.meta.outputs.make_latest }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
-          generate_release_notes: true
+          generate_release_notes: ${{ steps.meta.outputs.tag != 'nightly' }}
+          body: ${{ steps.meta.outputs.tag == 'nightly' && format('Rolling build from `{0}`. GUI CI downloads this prerelease; `v*` tags remain GitHub Latest.', github.sha) || '' }}
           files: dist/*
           fail_on_unmatched_files: true
         env:
