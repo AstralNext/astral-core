@@ -1,7 +1,7 @@
 # 多平台编译 astral-core，上传到 GitHub Releases。
 #
 # 触发：
-#   - 推送 main：覆盖滚动预发布 nightly（GUI CI 始终下这个）
+#   - 推送 main：覆盖滚动预发布 nightly（最新一条发布；GitHub Latest 不能是预发布）
 #   - 推送 tag：v*（如 v0.1.0，GitHub Latest）
 #   - 手动 workflow_dispatch（可选指定 tag 名）
 #
@@ -259,7 +259,7 @@ jobs:
           make_latest: ${{ steps.meta.outputs.make_latest }}
           draft: ${{ github.event_name == 'workflow_dispatch' && inputs.tag == '' }}
           generate_release_notes: ${{ steps.meta.outputs.tag != 'nightly' }}
-          body: ${{ steps.meta.outputs.tag == 'nightly' && format('Rolling build from `{0}`. GUI CI downloads this prerelease; `v*` tags remain GitHub Latest.', github.sha) || '' }}
+          body: ${{ steps.meta.outputs.tag == 'nightly' && format('Rolling build from `{0}`. Installers and GUI CI download the newest published release (not GitHub Latest, which stays on `v*` tags).', github.sha) || '' }}
           files: dist/*
           fail_on_unmatched_files: true
         env:

@@ -48,11 +48,22 @@ New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 $exePath = Join-Path $binDir 'astral-core.exe'
 
 if ($Version -eq 'latest') {
-  $base = "https://github.com/$Repo/releases/latest/download"
-} else {
-  if ($Version -notmatch '^v') { $Version = "v$Version" }
-  $base = "https://github.com/$Repo/releases/download/$Version"
+  # 只取最新一条发布（含 nightly）。GitHub Latest 不能是预发布，会停在过期 v*。
+  $headers = @{
+    Accept = 'application/vnd.github+json'
+    'User-Agent' = 'astral-core-get'
+  }
+  $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases?per_page=1" -Headers $headers
+  if ($rel -is [System.Array]) {
+    $Version = $rel[0].tag_name
+  } else {
+    $Version = $rel.tag_name
+  }
+  if (-not $Version) { throw '无法解析最新发布标签' }
+} elseif ($Version -notmatch '^(v|nightly)') {
+  $Version = "v$Version"
 }
+$base = "https://github.com/$Repo/releases/download/$Version"
 
 Write-Info "正在下载 $asset ($Version)"
 $tmp = Join-Path $env:TEMP ("astral-core-get-" + [guid]::NewGuid().ToString('n'))

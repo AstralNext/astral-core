@@ -80,14 +80,23 @@ APP_DIR="${DATA_HOME}/astral-core"
 mkdir -p "$BIN_DIR" "$APP_DIR"
 
 if [ "$VERSION" = "latest" ]; then
-  BASE="https://github.com/${REPO}/releases/latest/download"
-else
-  case "$VERSION" in
-    v*) ;;
-    *) VERSION="v${VERSION}" ;;
-  esac
-  BASE="https://github.com/${REPO}/releases/download/${VERSION}"
+  # 只取最新一条发布（含 nightly）。GitHub Latest 不能是预发布，会停在过期 v*。
+  api="https://api.github.com/repos/${REPO}/releases?per_page=1"
+  if command -v curl >/dev/null 2>&1; then
+    json="$(curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: astral-core-get" "$api")" || die "无法获取最新发布"
+  elif command -v wget >/dev/null 2>&1; then
+    json="$(wget -qO- --header="Accept: application/vnd.github+json" --header="User-Agent: astral-core-get" "$api")" || die "无法获取最新发布"
+  else
+    die "需要 curl 或 wget"
+  fi
+  VERSION="$(printf '%s' "$json" | tr ',' '\n' | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1)"
+  [ -n "$VERSION" ] || die "无法解析最新发布标签"
 fi
+case "$VERSION" in
+  nightly|v*) ;;
+  *) VERSION="v${VERSION}" ;;
+esac
+BASE="https://github.com/${REPO}/releases/download/${VERSION}"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
