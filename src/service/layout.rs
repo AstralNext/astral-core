@@ -237,28 +237,36 @@ fn create_current_link(root: &Path, version: &str) -> Result<()> {
 }
 
 fn remove_current_link(link: &Path) -> Result<()> {
-    if !is_symlink_or_junction(link) && !link.exists() {
+    if !link.exists() && !is_symlink_or_junction(link) {
         return Ok(());
     }
 
     #[cfg(windows)]
     {
-        // 目录结必须用 rmdir 去掉链接本身；remove_dir_all 可能误伤目标或拒访
-        let parent = link.parent().ok_or_else(|| anyhow!("current 无父目录"))?;
-        let name = link
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| anyhow!("非法 current 名"))?;
-        let status = Command::new("cmd")
-            .current_dir(parent)
-            .args(["/C", "rmdir", name])
-            .status()
-            .context("执行 rmdir 失败")?;
-        if status.success() || !is_symlink_or_junction(link) {
+        // 目录结必须用 rmdir 去掉链接本身；remove_dir_all 可能误伤目标。
+        if is_symlink_or_junction(link) {
+            let parent = link.parent().ok_or_else(|| anyhow!("current 无父目录"))?;
+            let name = link
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| anyhow!("非法 current 名"))?;
+            let status = Command::new("cmd")
+                .current_dir(parent)
+                .args(["/C", "rmdir", name])
+                .status()
+                .context("执行 rmdir 失败")?;
+            if !status.success() && is_symlink_or_junction(link) {
+                bail!("移除 current 目录结失败: {}", link.display());
+            }
             return Ok(());
         }
-        // 若不是结而是普通空目录，再试一次 remove_dir
-        fs::remove_dir(link).with_context(|| format!("移除 current 失败: {}", link.display()))?;
+        if link.is_dir() {
+            fs::remove_dir_all(link)
+                .with_context(|| format!("移除残缺 current 目录失败: {}", link.display()))?;
+        } else if link.is_file() {
+            fs::remove_file(link)
+                .with_context(|| format!("移除 current 失败: {}", link.display()))?;
+        }
         return Ok(());
     }
 
@@ -272,7 +280,7 @@ fn remove_current_link(link: &Path) -> Result<()> {
                     .with_context(|| format!("移除 current 失败: {}", link.display()))?;
             }
             Ok(m) if m.is_dir() => {
-                fs::remove_dir(link)
+                fs::remove_dir_all(link)
                     .with_context(|| format!("移除 current 失败: {}", link.display()))?;
             }
             Ok(_) => {
@@ -289,7 +297,22 @@ fn remove_current_link(link: &Path) -> Result<()> {
 }
 
 fn is_symlink_or_junction(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok()
+    let Ok(meta) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if meta.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
 }
 
 /// 列出安装根下的版本目录名（排除 current）。
