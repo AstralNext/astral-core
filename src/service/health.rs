@@ -105,10 +105,51 @@ fn legacy_service_installed(user: bool) -> bool {
         .is_some_and(|s| s != "not-installed")
 }
 
+/// 读取 SCM 登记的服务二进制路径（Windows: `sc qc`）。
+#[cfg(windows)]
+fn scm_service_bin_path() -> Option<String> {
+    let out = std::process::Command::new("sc")
+        .args(["qc", super::SERVICE_QUALIFIED_NAME])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    for line in text.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("BINARY_PATH_NAME") {
+            let rest = rest.trim_start_matches(':').trim();
+            if !rest.is_empty() {
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// 服务指向的 exe 不是固定路径 → 视为旧服务，需删除重装。
+#[cfg(windows)]
+pub fn service_points_to_old_path(install_root: &Path) -> Option<String> {
+    let bin = scm_service_bin_path()?;
+    let fixed = super::layout::program_path(install_root);
+    let normalized = bin
+        .replace('\\', "/")
+        .trim_matches('"')
+        .to_lowercase();
+    let fixed_norm = fixed.to_string_lossy().replace('\\', "/").to_lowercase();
+    if normalized.contains(&fixed_norm) {
+        return None;
+    }
+    Some(bin)
+}
+
 pub fn inspect_health(user: bool) -> Result<ServiceHealthReport> {
     let data_dir = default_data_root()?;
     let legacy_data_dir = legacy_data_dir(&data_dir);
     let listen = default_listen();
+    // 体检可能非提权运行：只取路径，不创建目录
+    let install_root = super::layout::default_install_root().ok();
 
     let scm = status(ServiceActionOptions { user })?;
     let scm_status = scm_status_text(&scm).to_string();
@@ -136,6 +177,14 @@ pub fn inspect_health(user: bool) -> Result<ServiceHealthReport> {
     }
     if legacy_data_dir.exists() {
         issues.push(format!("旧数据目录仍存在: {}", legacy_data_dir.display()));
+    }
+    #[cfg(windows)]
+    if scm_status != "not-installed" {
+        if let Some(root) = &install_root {
+            if let Some(old) = service_points_to_old_path(root) {
+                issues.push(format!("服务指向旧路径，需删除重装: {old}"));
+            }
+        }
     }
     if let Some(listener) = &listener {
         if listener.is_astral_core && (!listener.generation_match || listener.is_legacy) {

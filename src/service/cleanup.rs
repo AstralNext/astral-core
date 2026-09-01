@@ -1,4 +1,4 @@
-//! 旧服务 / 孤儿进程 / 旧目录清理与迁移。
+//! 旧服务 / 孤儿进程 / 旧目录清理与数据迁移。
 #![allow(missing_docs)]
 
 use std::fs;
@@ -19,7 +19,6 @@ use tracing::{info, warn};
 
 use super::health::{default_data_root, ListenerInfo, ServiceHealthReport};
 use super::manage::native_manager;
-use super::recovery::{begin_phase, clear_state, resume_if_incomplete, MigrationPhase};
 use super::{LEGACY_SERVICE_QUALIFIED_NAME, SERVICE_GENERATION, SERVICE_QUALIFIED_NAME};
 
 const DEFAULT_LISTEN: &str = "127.0.0.1:50051";
@@ -243,7 +242,7 @@ pub fn migrate_legacy_data_if_needed(force: bool) -> Result<bool> {
     let root = default_data_root()?;
     let mut migrated = false;
 
-    // 1. 旧版布局：root/instances/default → root
+    // 旧版布局：root/instances/default → root
     let legacy = legacy_data_dir(&root);
     if legacy.exists() {
         let node_id = root.join("node_id");
@@ -260,7 +259,7 @@ pub fn migrate_legacy_data_if_needed(force: bool) -> Result<bool> {
         }
     }
 
-    // 2. 旧 AppData 路径 → 新 ProgramData 路径（Windows 路径变更迁移）
+    // 旧 AppData 路径 → 新 ProgramData 路径（Windows 路径变更迁移）
     #[cfg(windows)]
     {
         if let Some(old_root) = legacy_appdata_data_root() {
@@ -289,8 +288,17 @@ fn legacy_appdata_data_root() -> Option<PathBuf> {
     Some(dirs.data_dir().to_path_buf())
 }
 
+/// 旧版安装根（%LOCALAPPDATA%\Astral\...\app），含并排版本目录。
+#[cfg(windows)]
+fn legacy_install_root() -> Option<PathBuf> {
+    let dirs = ProjectDirs::from("dev", "Astral", "astral-core")?;
+    let local = std::env::var("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| dirs.data_local_dir().to_path_buf());
+    Some(local.join("Astral").join("astral-core").join("data").join("app"))
+}
+
 /// 旧版 GUI TOML 配置目录候选（Windows）。
-/// 顺序：AstralNext > Astral（旧名）。
 #[cfg(windows)]
 fn legacy_toml_src_dirs() -> Vec<PathBuf> {
     let appdata = std::env::var("APPDATA").map(PathBuf::from).ok();
@@ -357,6 +365,34 @@ pub fn remove_legacy_data_dir_if_safe() -> Result<bool> {
     Ok(true)
 }
 
+/// 删除旧安装目录（旧 AppData 布局），并清理新根下的版本目录残留。
+#[cfg(windows)]
+fn remove_old_install_dirs() -> bool {
+    let mut removed = false;
+    if let Some(old_app) = legacy_install_root() {
+        if old_app.exists() {
+            info!(path = %old_app.display(), "删除旧安装目录");
+            let _ = fs::remove_dir_all(&old_app);
+            removed = true;
+        }
+    }
+    // 旧 AppData 数据根若已迁空则删除
+    if let Some(old_root) = legacy_appdata_data_root() {
+        if old_root.exists() {
+            let empty = fs::read_dir(&old_root)
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false);
+            if empty {
+                let _ = fs::remove_dir(&old_root);
+            }
+        }
+    }
+    if let Ok(root) = super::layout::default_install_root() {
+        super::layout::cleanup_legacy_layout(&root);
+    }
+    removed
+}
+
 pub fn normalize_registry_generation() -> Result<bool> {
     let mut reg = super::registry::load()?;
     if reg.instances.is_empty() {
@@ -385,12 +421,24 @@ pub fn normalize_registry_generation() -> Result<bool> {
 }
 
 pub fn repair_environment(opts: RepairOptions) -> Result<RepairReport> {
-    begin_phase(MigrationPhase::StopOld, None, Some("repair".into()))?;
     let mut report = RepairReport::default();
     let listen = default_listen();
 
     report.stopped_current_service =
         stop_service_by_name(SERVICE_QUALIFIED_NAME, opts.user).unwrap_or(false);
+
+    // 指向旧路径的服务一律删除（重装时会以固定路径重建）
+    #[cfg(windows)]
+    {
+        if let Ok(root) = super::layout::default_install_root() {
+            if super::health::service_points_to_old_path(&root).is_some() {
+                if uninstall_service_by_name(SERVICE_QUALIFIED_NAME, opts.user).unwrap_or(false) {
+                    info!("已删除指向旧路径的服务，等待重装到固定路径");
+                    report.stopped_current_service = true;
+                }
+            }
+        }
+    }
 
     if uninstall_service_by_name(LEGACY_SERVICE_QUALIFIED_NAME, opts.user)? {
         report.uninstalled_legacy_service = true;
@@ -410,38 +458,25 @@ pub fn repair_environment(opts: RepairOptions) -> Result<RepairReport> {
 
     report.removed_legacy_data_dir = remove_legacy_data_dir_if_safe().unwrap_or(false);
 
+    #[cfg(windows)]
+    {
+        let _ = remove_old_install_dirs();
+    }
+
     report.normalized_registry = normalize_registry_generation().unwrap_or(false);
 
     if let Ok(report_health) = super::health::inspect_health(opts.user) {
         let _ = verify_service_consistency(&report_health);
     }
-
-    begin_phase(MigrationPhase::Done, None, None)?;
-    clear_state()?;
     Ok(report)
 }
 
 /// install / update 前置：清理旧服务、旧进程、迁移数据。
 pub fn prepare_install_or_update(user: bool, migrate_data: bool) -> Result<()> {
-    resume_if_incomplete(|phase| {
-        warn!(phase = ?phase, "检测到未完成迁移，继续执行修复");
-        Ok(())
-    })?;
-
-    if let Some(state) = super::recovery::load_state()? {
-        if state.phase != MigrationPhase::Done {
-            warn!(
-                phase = ?state.phase,
-                "检测到未完成的迁移状态，将继续修复"
-            );
-        }
-    }
-    begin_phase(MigrationPhase::Preflight, None, Some("prepare".into()))?;
     let _ = repair_environment(RepairOptions {
         user,
         migrate_legacy_data: migrate_data,
-    })?;
-    begin_phase(MigrationPhase::MigrateData, None, None)?;
+    });
     Ok(())
 }
 
@@ -456,7 +491,6 @@ pub fn cleanup_after_uninstall(user: bool, purge_data: bool) -> Result<()> {
             let _ = fs::remove_dir_all(&root);
         }
     }
-    let _ = clear_state();
     Ok(())
 }
 

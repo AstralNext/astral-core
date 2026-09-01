@@ -66,7 +66,7 @@ struct RunCli {
 
 #[derive(Debug, Subcommand)]
 enum ServiceCommand {
-    /// 注册为系统服务（落入并排版本布局，服务指向 current）
+    /// 注册为系统服务（复制到固定安装目录）
     Install {
         /// JSON-RPC 监听地址（仅本机）
         #[arg(long, default_value = "127.0.0.1:50051")]
@@ -76,21 +76,13 @@ enum ServiceCommand {
         #[arg(long)]
         data_dir: Option<PathBuf>,
 
-        /// 源二进制；缺省为当前 astral-core（会复制进版本目录）
+        /// 源二进制；缺省为当前 astral-core
         #[arg(long)]
         program: Option<PathBuf>,
 
-        /// 并排版本安装根；缺省为平台 Local 数据目录下 app/
+        /// 安装根；缺省为固定目录
         #[arg(long)]
         install_root: Option<PathBuf>,
-
-        /// 版本号；缺省从二进制 --version 推断
-        #[arg(long)]
-        version: Option<String>,
-
-        /// 保留版本数（含当前）
-        #[arg(long, default_value_t = 3)]
-        retain: usize,
 
         /// 用户级服务（systemd --user / LaunchAgent）；Windows 不支持
         #[arg(long)]
@@ -138,25 +130,17 @@ enum ServiceCommand {
         #[arg(long)]
         migrate_legacy_data: bool,
     },
-    /// 落入新版本并重启本机服务
+    /// 覆盖固定路径内核并重启服务
     Update {
         /// 新二进制；缺省为当前进程
         #[arg(long)]
         program: Option<PathBuf>,
 
-        /// 版本号；缺省从二进制推断
-        #[arg(long)]
-        version: Option<String>,
-
         /// 安装根；缺省用登记值
         #[arg(long)]
         install_root: Option<PathBuf>,
 
-        /// 保留版本数（含当前）
-        #[arg(long, default_value_t = 3)]
-        retain: usize,
-
-        /// 只切换不启动
+        /// 只覆盖不启动
         #[arg(long)]
         no_start: bool,
     },
@@ -216,8 +200,6 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
             data_dir,
             program,
             install_root,
-            version,
-            retain,
             user,
             no_start,
         } => {
@@ -226,8 +208,6 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
                 data_dir,
                 program,
                 install_root,
-                version,
-                retain,
                 user,
                 start_after_install: !no_start,
             })?;
@@ -280,16 +260,12 @@ fn service_entry(action: ServiceCommand) -> anyhow::Result<()> {
         }
         ServiceCommand::Update {
             program,
-            version,
             install_root,
-            retain,
             no_start,
         } => {
             service::update(UpdateOptions {
                 program,
-                version,
                 install_root,
-                retain,
                 no_start,
             })?;
         }

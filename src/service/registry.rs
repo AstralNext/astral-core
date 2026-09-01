@@ -1,24 +1,21 @@
-//! 已安装服务实例登记（供自动更新批量停启）。
+//! 已安装服务登记（单机单服务，仅记录布局与参数）。
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
-use directories::ProjectDirs;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use super::health::default_data_root;
 use super::SERVICE_REGISTRY_KEY;
 
 /// 全局服务登记文件内容。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ServiceRegistry {
-    /// 并排版本安装根目录（含 `current` 与各版本目录）。
+    /// 安装根目录。
     #[serde(default)]
     pub install_root: Option<PathBuf>,
-    /// 当前激活的版本号。
-    #[serde(default)]
-    pub active_version: Option<String>,
-    /// 服务登记的稳定 exe：`{install_root}/current/astral-core[.exe]`。
+    /// 服务登记的 exe 路径。
     #[serde(default)]
     pub program: Option<PathBuf>,
     /// 服务代际（用于识别旧进程）。
@@ -52,10 +49,8 @@ fn registry_path() -> Result<PathBuf> {
         }
         return Ok(path);
     }
-    let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
-        .ok_or_else(|| anyhow!("无法解析平台数据目录"))?;
-    let root = dirs.data_dir();
-    std::fs::create_dir_all(root)?;
+    let root = default_data_root()?;
+    std::fs::create_dir_all(&root)?;
     Ok(root.join("installed_services.json"))
 }
 
@@ -76,10 +71,6 @@ fn canonicalize(path: &Path) -> PathBuf {
     p
 }
 
-fn same_install_root(a: &Path, b: &Path) -> bool {
-    canonicalize(a) == canonicalize(b)
-}
-
 /// 读取登记；文件不存在则返回空表。
 pub fn load() -> Result<ServiceRegistry> {
     let path = registry_path()?;
@@ -89,10 +80,6 @@ pub fn load() -> Result<ServiceRegistry> {
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("读取服务登记失败: {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("解析服务登记失败: {}", path.display()))
-}
-
-fn save(reg: &ServiceRegistry) -> Result<()> {
-    save_raw(reg)
 }
 
 /// 写入登记（供清理 / 迁移模块使用）。
@@ -109,76 +96,38 @@ pub fn save_raw(reg: &ServiceRegistry) -> Result<()> {
     Ok(())
 }
 
-/// 安装成功后写入服务记录，并记录布局信息。
+/// 安装成功后写入服务记录。
 pub fn record_install(
     install_root: &Path,
-    active_version: &str,
     program: &Path,
     listen: SocketAddr,
     data_dir: &Path,
     user: bool,
 ) -> Result<()> {
-    let install_root = canonicalize(install_root);
-    let program = canonicalize(program);
-    let data_dir = canonicalize(data_dir);
-    let mut reg = load()?;
-    if let Some(existing) = reg.install_root.as_ref() {
-        if !same_install_root(existing, &install_root) {
-            return Err(anyhow!(
-                "已登记安装根为 {}，不能再安装到 {}（单登记文件仅支持一个 install_root）",
-                existing.display(),
-                install_root.display()
-            ));
-        }
-    }
-    reg.install_root = Some(install_root);
-    reg.active_version = Some(active_version.to_string());
-    reg.program = Some(program);
-    reg.service_generation = Some(super::SERVICE_GENERATION.to_string());
-    if let Some(existing) = reg.instances.first_mut() {
-        existing.listen = listen;
-        existing.data_dir = data_dir;
-        existing.user = user;
-    } else {
-        reg.instances.push(InstalledInstance {
+    let reg = ServiceRegistry {
+        install_root: Some(canonicalize(install_root)),
+        program: Some(canonicalize(program)),
+        service_generation: Some(super::SERVICE_GENERATION.to_string()),
+        instances: vec![InstalledInstance {
             name: SERVICE_REGISTRY_KEY.to_string(),
             listen,
-            data_dir,
+            data_dir: canonicalize(data_dir),
             user,
-        });
-    }
-    save(&reg)
+        }],
+    };
+    save_raw(&reg)
 }
 
-/// 卸载后移除服务记录；若无记录则清空布局字段。
-pub fn record_uninstall(user: bool) -> Result<()> {
+/// 更新后仅刷新程序路径。
+pub fn record_program(install_root: &Path, program: &Path) -> Result<()> {
     let mut reg = load()?;
-    reg.instances
-        .retain(|i| !(i.name == SERVICE_REGISTRY_KEY && i.user == user));
-    if reg.instances.is_empty() {
-        reg.program = None;
-        reg.install_root = None;
-        reg.active_version = None;
-        reg.service_generation = None;
-    }
-    save(&reg)
-}
-
-/// 切换版本后更新登记。
-pub fn record_active(install_root: &Path, active_version: &str, program: &Path) -> Result<()> {
-    let install_root = canonicalize(install_root);
-    let mut reg = load()?;
-    if let Some(existing) = reg.install_root.as_ref() {
-        if !same_install_root(existing, &install_root) {
-            return Err(anyhow!(
-                "更新目标安装根 {} 与登记 {} 不一致",
-                install_root.display(),
-                existing.display()
-            ));
-        }
-    }
-    reg.install_root = Some(install_root);
-    reg.active_version = Some(active_version.to_string());
+    reg.install_root = Some(canonicalize(install_root));
     reg.program = Some(canonicalize(program));
-    save(&reg)
+    reg.service_generation = Some(super::SERVICE_GENERATION.to_string());
+    save_raw(&reg)
+}
+
+/// 卸载后清空登记。
+pub fn record_uninstall() -> Result<()> {
+    save_raw(&ServiceRegistry::default())
 }

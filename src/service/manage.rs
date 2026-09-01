@@ -23,14 +23,10 @@ pub struct InstallOptions {
     pub listen: SocketAddr,
     /// 可选数据目录；缺省为平台数据根目录。
     pub data_dir: Option<PathBuf>,
-    /// 要落入布局的源二进制；缺省为当前进程。
+    /// 要安装的源二进制；缺省为当前进程。
     pub program: Option<PathBuf>,
-    /// 并排版本安装根；缺省为平台 Local/`app`。
+    /// 安装根；缺省为固定目录。
     pub install_root: Option<PathBuf>,
-    /// 版本号；缺省从二进制 `--version` 或 crate 版本推断。
-    pub version: Option<String>,
-    /// 保留版本数（含当前），默认 3。
-    pub retain: usize,
     /// 用户级服务（systemd user / launchd agent）；Windows 不支持。
     pub user: bool,
     /// 安装后立即启动。
@@ -161,23 +157,16 @@ fn build_service_args(listen: SocketAddr, data_dir: &Path, label: &ServiceLabel)
     args
 }
 
-/// 安装系统服务（先落入并排版本布局，服务指向 `current`）。
+/// 安装系统服务（复制 exe 到固定路径，服务直接指向该路径）。
+/// 已存在的旧版/异常服务会被先删除，始终以全新登记收尾。
 pub fn install(opts: InstallOptions) -> Result<()> {
     super::cleanup::prepare_install_or_update(opts.user, true)?;
-    super::recovery::begin_phase(
-        super::recovery::MigrationPhase::StageNewVersion,
-        opts.version.clone(),
-        None,
-    )?;
     let label = service_label()?;
     let source = resolve_program(opts.program)?;
     let root = super::layout::resolve_install_root(opts.install_root)?;
-    let version = super::layout::resolve_version(opts.version.as_deref(), &source)?;
-    super::layout::stage_version(&root, &version, &source)?;
-    super::layout::switch_current(&root, &version)?;
-    super::layout::prune_versions(&root, &version, opts.retain)?;
+    super::layout::cleanup_legacy_layout(&root);
+    let program = super::layout::stage_binary(&root, &source)?;
 
-    let program = super::layout::current_program(&root);
     let data_dir = resolve_data_dir(opts.data_dir)?;
     let args = build_service_args(opts.listen, &data_dir, &label);
     let manager = native_manager(opts.user)?;
@@ -186,7 +175,6 @@ pub fn install(opts: InstallOptions) -> Result<()> {
         service = %label.to_qualified_name(),
         program = %program.display(),
         install_root = %root.display(),
-        version = %version,
         data_dir = %data_dir.display(),
         listen = %opts.listen,
         user = opts.user,
@@ -207,7 +195,7 @@ pub fn install(opts: InstallOptions) -> Result<()> {
         })
         .with_context(|| format!("安装服务失败: {}", label.to_qualified_name()))?;
 
-    super::registry::record_install(&root, &version, &program, opts.listen, &data_dir, opts.user)?;
+    super::registry::record_install(&root, &program, opts.listen, &data_dir, opts.user)?;
 
     if opts.start_after_install {
         manager
@@ -219,9 +207,6 @@ pub fn install(opts: InstallOptions) -> Result<()> {
     } else {
         info!(service = %label.to_qualified_name(), "服务已安装（未启动）");
     }
-
-    super::recovery::begin_phase(super::recovery::MigrationPhase::Done, Some(version), None)?;
-    let _ = super::recovery::clear_state();
     Ok(())
 }
 
@@ -243,7 +228,7 @@ fn uninstall_service_only(opts: ServiceActionOptions) -> Result<()> {
             label: label.clone(),
         })
         .with_context(|| format!("卸载服务失败: {}", label.to_qualified_name()))?;
-    super::registry::record_uninstall(opts.user).with_context(|| "更新服务登记失败")?;
+    super::registry::record_uninstall().with_context(|| "更新服务登记失败")?;
     info!(service = %label.to_qualified_name(), "服务已卸载");
     Ok(())
 }
