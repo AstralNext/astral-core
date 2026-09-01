@@ -96,6 +96,7 @@ impl EngineHandle {
     /// 按缓存中「上次在跑」的记录拉起实例（开机自启）。
     ///
     /// 单个失败不阻断其它实例；调用方可按 [`RestoreReport::failed`] 重试。
+    /// 同一 source_path 只恢复最新一条，避免历史累积导致重启雪崩。
     pub fn restore_desired(&self) -> RestoreReport {
         let desired = match self.cache.desired_running() {
             Ok(list) => list,
@@ -107,6 +108,7 @@ impl EngineHandle {
                 };
             }
         };
+        let desired = dedup_by_source_path(desired);
 
         let mut report = RestoreReport::default();
         for rec in desired {
@@ -174,6 +176,21 @@ impl EngineHandle {
         source_path: &str,
     ) -> CoreResult<Uuid> {
         let id = cfg.get_id();
+        // 按 source_path 去重：同一文件已有 running 实例则复用，避免反复启动叠加。
+        if !source_path.trim().is_empty() {
+            if let Some(existing) = self.find_running_by_source_path(source_path)? {
+                let existing_id = Uuid::parse_str(&existing.instance_id).unwrap_or(id);
+                if existing_id != id {
+                    warn!(
+                        existing_id = %existing_id,
+                        new_id = %id,
+                        source_path = %source_path,
+                        "同源实例已在运行，复用已有实例而不新建"
+                    );
+                    return Ok(existing_id);
+                }
+            }
+        }
         if self.exists(id) {
             let started_at = self
                 .cache
@@ -201,6 +218,21 @@ impl EngineHandle {
             started_at_unix_ms: Some(Self::now_unix_ms()),
         })?;
         Ok(id)
+    }
+
+    /// 在缓存中查找同一 source_path 且仍在运行的实例。
+    fn find_running_by_source_path(&self, source_path: &str) -> CoreResult<Option<CachedInstance>> {
+        let target = source_path.trim();
+        if target.is_empty() {
+            return Ok(None);
+        }
+        let list = self.cache.list()?;
+        Ok(list
+            .into_iter()
+            .filter(|c| {
+                c.source_path.trim() == target && c.started_at_unix_ms.is_some()
+            })
+            .max_by_key(|c| c.started_at_unix_ms.unwrap_or(0)))
     }
 
     /// 停止（保留配置缓存，便于 Restart）。
@@ -400,6 +432,27 @@ impl IntoOptionalString for Option<String> {
     fn into_optional_string(self) -> String {
         self.unwrap_or_default()
     }
+}
+
+/// 按 source_path 去重：同一 source_path 只保留 started_at 最新的一条，
+/// 避免 cache 历史累积导致 restore_desired 重启雪崩。
+/// source_path 为空的记录按 instance_id 保留（不去重）。
+fn dedup_by_source_path(mut records: Vec<CachedInstance>) -> Vec<CachedInstance> {
+    records.sort_by(|a, b| {
+        b.started_at_unix_ms
+            .unwrap_or(0)
+            .cmp(&a.started_at_unix_ms.unwrap_or(0))
+    });
+    let mut seen = std::collections::HashSet::new();
+    records.retain(|r| {
+        let key = if r.source_path.trim().is_empty() {
+            r.instance_id.clone()
+        } else {
+            r.source_path.trim().to_string()
+        };
+        seen.insert(key)
+    });
+    records
 }
 
 fn ipv4_from_toml(toml: &str) -> String {

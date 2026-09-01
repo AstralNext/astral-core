@@ -5,6 +5,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+#[cfg(not(windows))]
 use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use service_manager::ServiceStatus;
@@ -55,9 +56,20 @@ pub fn default_data_root() -> Result<PathBuf> {
             return Ok(path);
         }
     }
-    let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
-        .ok_or_else(|| anyhow::anyhow!("无法解析平台数据目录"))?;
-    Ok(dirs.data_dir().to_path_buf())
+    #[cfg(windows)]
+    {
+        let root = std::env::var("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+            .join("nextAstral");
+        Ok(root)
+    }
+    #[cfg(not(windows))]
+    {
+        let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
+            .ok_or_else(|| anyhow::anyhow!("无法解析平台数据目录"))?;
+        Ok(dirs.data_dir().to_path_buf())
+    }
 }
 
 fn legacy_data_dir(root: &Path) -> PathBuf {

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{anyhow, bail, Context, Result};
+#[cfg(not(windows))]
 use directories::ProjectDirs;
 use service_manager::{
     ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx, ServiceStatus,
@@ -109,9 +110,20 @@ pub(crate) fn dunce_canonicalize(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 fn default_service_data_dir() -> Result<PathBuf> {
-    let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
-        .ok_or_else(|| anyhow!("无法解析平台数据目录"))?;
-    Ok(dirs.data_dir().to_path_buf())
+    #[cfg(windows)]
+    {
+        let root = std::env::var("PROGRAMDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+            .join("nextAstral");
+        Ok(root)
+    }
+    #[cfg(not(windows))]
+    {
+        let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
+            .ok_or_else(|| anyhow!("无法解析平台数据目录"))?;
+        Ok(dirs.data_dir().to_path_buf())
+    }
 }
 
 fn resolve_data_dir(explicit: Option<PathBuf>) -> Result<PathBuf> {

@@ -10,6 +10,8 @@ use std::thread;
 use std::time::Duration;
 
 use anyhow::Result;
+#[cfg(windows)]
+use directories::ProjectDirs;
 use service_manager::{
     ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx,
 };
@@ -239,22 +241,99 @@ fn copy_dir_contents(src: &Path, dest: &Path) -> Result<()> {
 
 pub fn migrate_legacy_data_if_needed(force: bool) -> Result<bool> {
     let root = default_data_root()?;
+    let mut migrated = false;
+
+    // 1. 旧版布局：root/instances/default → root
     let legacy = legacy_data_dir(&root);
-    if !legacy.exists() {
+    if legacy.exists() {
+        let node_id = root.join("node_id");
+        if !node_id.exists() || force {
+            info!(
+                from = %legacy.display(),
+                to = %root.display(),
+                "迁移 legacy 数据目录"
+            );
+            copy_dir_contents(&legacy, &root)?;
+            migrated = true;
+        } else {
+            info!("数据根已有 node_id，跳过 legacy 迁移");
+        }
+    }
+
+    // 2. 旧 AppData 路径 → 新 ProgramData 路径（Windows 路径变更迁移）
+    #[cfg(windows)]
+    {
+        if let Some(old_root) = legacy_appdata_data_root() {
+            if old_root.exists() && old_root != root {
+                let node_id = root.join("node_id");
+                if !node_id.exists() || force {
+                    info!(
+                        from = %old_root.display(),
+                        to = %root.display(),
+                        "迁移旧 AppData 数据目录到 ProgramData"
+                    );
+                    copy_dir_contents(&old_root, &root)?;
+                    migrated = true;
+                }
+            }
+        }
+    }
+
+    Ok(migrated)
+}
+
+/// 旧版 Windows AppData 数据根（ProjectDirs 路径）。
+#[cfg(windows)]
+fn legacy_appdata_data_root() -> Option<PathBuf> {
+    let dirs = ProjectDirs::from("dev", "Astral", "astral-core")?;
+    Some(dirs.data_dir().to_path_buf())
+}
+
+/// 旧版 GUI TOML 配置目录候选（Windows）。
+/// 顺序：AstralNext > Astral（旧名）。
+#[cfg(windows)]
+fn legacy_toml_src_dirs() -> Vec<PathBuf> {
+    let appdata = std::env::var("APPDATA").map(PathBuf::from).ok();
+    let local_appdata = std::env::var("LOCALAPPDATA").map(PathBuf::from).ok();
+    let mut out = Vec::new();
+    if let Some(a) = &appdata {
+        out.push(a.join("AstralNext").join("astral").join("src"));
+        out.push(a.join("Astral").join("astral").join("src"));
+    }
+    if let Some(la) = &local_appdata {
+        out.push(la.join("AstralNext").join("astral").join("src"));
+        out.push(la.join("Astral").join("astral").join("src"));
+    }
+    out
+}
+
+/// 迁移旧 TOML 配置目录到新数据根的 src/ 子目录。
+#[cfg(windows)]
+fn migrate_legacy_toml_if_needed(force: bool) -> Result<bool> {
+    let root = default_data_root()?;
+    let dest = root.join("src");
+    let dest_node_id = root.join("node_id");
+    // 仅在数据根尚未初始化时迁移，避免覆盖已有配置
+    if !force && dest_node_id.exists() && dest.exists() {
         return Ok(false);
     }
-    let node_id = root.join("node_id");
-    if node_id.exists() && !force {
-        info!("数据根已有 node_id，跳过 legacy 迁移");
-        return Ok(false);
+    let mut migrated = false;
+    for src in legacy_toml_src_dirs() {
+        if !src.is_dir() {
+            continue;
+        }
+        if !dest.exists() {
+            fs::create_dir_all(&dest)?;
+        }
+        info!(
+            from = %src.display(),
+            to = %dest.display(),
+            "迁移旧 TOML 配置目录"
+        );
+        copy_dir_contents(&src, &dest)?;
+        migrated = true;
     }
-    info!(
-        from = %legacy.display(),
-        to = %root.display(),
-        "迁移 legacy 数据目录"
-    );
-    copy_dir_contents(&legacy, &root)?;
-    Ok(true)
+    Ok(migrated)
 }
 
 /// 数据已在根目录时，删除空的 legacy `instances/default` 目录。
@@ -321,6 +400,12 @@ pub fn repair_environment(opts: RepairOptions) -> Result<RepairReport> {
 
     if opts.migrate_legacy_data {
         report.migrated_legacy_data = migrate_legacy_data_if_needed(false)?;
+        #[cfg(windows)]
+        {
+            if migrate_legacy_toml_if_needed(false)? {
+                report.migrated_legacy_data = true;
+            }
+        }
     }
 
     report.removed_legacy_data_dir = remove_legacy_data_dir_if_safe().unwrap_or(false);

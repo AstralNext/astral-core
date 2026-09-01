@@ -2,8 +2,6 @@
 
 use std::path::PathBuf;
 
-use directories::ProjectDirs;
-
 use crate::error::{CoreError, CoreResult};
 
 /// 持久化文件路径集合。
@@ -16,11 +14,23 @@ pub struct DataPaths {
 impl DataPaths {
     /// 使用平台标准应用数据目录，并确保目录存在。
     pub fn discover() -> CoreResult<Self> {
-        let dirs = ProjectDirs::from("dev", "Astral", "astral-core")
-            .ok_or_else(|| CoreError::Internal("无法解析平台数据目录".into()))?;
-        let root = dirs.data_dir().to_path_buf();
-        std::fs::create_dir_all(&root)?;
-        Ok(Self { root })
+        #[cfg(windows)]
+        {
+            let root = std::env::var("PROGRAMDATA")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("C:\\ProgramData"))
+                .join("nextAstral");
+            std::fs::create_dir_all(&root)?;
+            Ok(Self { root })
+        }
+        #[cfg(not(windows))]
+        {
+            let dirs = directories::ProjectDirs::from("dev", "Astral", "astral-core")
+                .ok_or_else(|| CoreError::Internal("无法解析平台数据目录".into()))?;
+            let root = dirs.data_dir().to_path_buf();
+            std::fs::create_dir_all(&root)?;
+            Ok(Self { root })
+        }
     }
 
     /// 使用显式根目录（测试 / 便携模式）。
