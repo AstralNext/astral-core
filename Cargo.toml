@@ -1,6 +1,6 @@
 [package]
 name = "astral-core"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Astral 本机内核：嵌入 EasyTier，对本机 GUI 提供 JSON-RPC"
 license = "MIT"

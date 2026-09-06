@@ -14,7 +14,7 @@ use crate::engine::peers::{
     has_local_peer, hostname_from_info, merge_local_peer, my_ipv4_from_info,
     peer_summaries_from_info,
 };
-use crate::engine::structured::{loader_to_toml, structured_to_loader};
+use crate::engine::structured::structured_to_loader;
 use crate::error::{CoreError, CoreResult};
 use crate::model::{InstanceState, InstanceSummary, NetworkConfig, PeerSummary};
 use crate::store::{CachedInstance, InstanceCache};
@@ -153,7 +153,7 @@ impl EngineHandle {
     ) -> CoreResult<Uuid> {
         let cfg = TomlConfigLoader::new_from_str(toml)
             .map_err(|e| CoreError::FailedPrecondition(format!("配置 TOML 无效: {e:#}")))?;
-        self.start_loader(cfg, toml.to_string(), display_name, source_path)
+        self.start_loader(cfg, display_name, source_path)
     }
 
     /// 用结构化配置启动。
@@ -164,18 +164,19 @@ impl EngineHandle {
         source_path: &str,
     ) -> CoreResult<Uuid> {
         let cfg = structured_to_loader(net)?;
-        let toml = loader_to_toml(&cfg)?;
-        self.start_loader(cfg, toml, display_name, source_path)
+        self.start_loader(cfg, display_name, source_path)
     }
 
     fn start_loader(
         &self,
         cfg: TomlConfigLoader,
-        toml: String,
         display_name: &str,
         source_path: &str,
     ) -> CoreResult<Uuid> {
         let id = cfg.get_id();
+        // 固化 instance_id 后再序列化：落盘 TOML 永远带稳定 ID，
+        // 恢复 / 重启时重新解析不会生成新 UUID 而被误判为「另一个实例」。
+        let cached_toml = cfg.dump();
         // 按 source_path 去重：同一文件已有 running 实例则复用，避免反复启动叠加。
         if !source_path.trim().is_empty() {
             if let Some(existing) = self.find_running_by_source_path(source_path)? {
@@ -187,6 +188,7 @@ impl EngineHandle {
                         source_path = %source_path,
                         "同源实例已在运行，复用已有实例而不新建"
                     );
+                    self.prune_stale_source_path(source_path, existing_id);
                     return Ok(existing_id);
                 }
             }
@@ -199,11 +201,12 @@ impl EngineHandle {
                 .or(Some(Self::now_unix_ms()));
             self.cache.upsert(CachedInstance {
                 instance_id: id.to_string(),
-                toml,
+                toml: cached_toml,
                 display_name: display_name.to_string(),
                 source_path: source_path.to_string(),
                 started_at_unix_ms: started_at,
             })?;
+            self.prune_stale_source_path(source_path, id);
             return Ok(id);
         }
         self.manager
@@ -212,15 +215,19 @@ impl EngineHandle {
 
         self.cache.upsert(CachedInstance {
             instance_id: id.to_string(),
-            toml,
+            toml: cached_toml,
             display_name: display_name.to_string(),
             source_path: source_path.to_string(),
             started_at_unix_ms: Some(Self::now_unix_ms()),
         })?;
+        self.prune_stale_source_path(source_path, id);
         Ok(id)
     }
 
-    /// 在缓存中查找同一 source_path 且仍在运行的实例。
+    /// 在缓存中查找同一 source_path 且【在 ET 中实际运行】的实例。
+    ///
+    /// 必须校验 ET 存活表：跨进程恢复时落盘缓存仍带着上一进程的
+    /// `started_at`，仅凭缓存会误判「已在运行」而跳过真正拉起。
     fn find_running_by_source_path(&self, source_path: &str) -> CoreResult<Option<CachedInstance>> {
         let target = source_path.trim();
         if target.is_empty() {
@@ -229,10 +236,41 @@ impl EngineHandle {
         let list = self.cache.list()?;
         Ok(list
             .into_iter()
+            .filter(|c| c.source_path.trim() == target && c.started_at_unix_ms.is_some())
             .filter(|c| {
-                c.source_path.trim() == target && c.started_at_unix_ms.is_some()
+                Uuid::parse_str(&c.instance_id)
+                    .map(|id| self.exists(id))
+                    .unwrap_or(false)
             })
             .max_by_key(|c| c.started_at_unix_ms.unwrap_or(0)))
+    }
+
+    /// 清理同一 source_path 下已不在 ET 中运行的陈旧缓存记录（一个路径只保留一个实例）。
+    fn prune_stale_source_path(&self, source_path: &str, keep_id: Uuid) {
+        let target = source_path.trim();
+        if target.is_empty() {
+            return;
+        }
+        let list = match self.cache.list() {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(error = %e, "读取实例缓存失败，跳过同源陈旧记录清理");
+                return;
+            }
+        };
+        for rec in list {
+            if rec.source_path.trim() != target || rec.instance_id == keep_id.to_string() {
+                continue;
+            }
+            let live = Uuid::parse_str(&rec.instance_id)
+                .map(|id| self.exists(id))
+                .unwrap_or(false);
+            if !live {
+                if let Err(e) = self.cache.remove(&rec.instance_id) {
+                    warn!(error = %e, instance_id = %rec.instance_id, "清理同源陈旧实例缓存失败");
+                }
+            }
+        }
     }
 
     /// 停止（保留配置缓存，便于 Restart）。
